@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  neural_train:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: btc_neural_train
+    volumes:
+      # 挂载本地数据目录（包含已下载的K线数据）
+      - ./data:/app/data
+      # 挂载模型目录（保存训练结果）
+      - ./models:/app/models
+      # 挂载日志目录
+      - ./logs:/app/logs
+      # 挂载训练脚本
+      - ./train_hybrid_model.py:/app/train_hybrid_model.py
+      - ./btc_quant:/app/btc_quant
+      - ./config.yaml:/app/config.yaml
+    environment:
+      - PYTHONUNBUFFERED=1
+      - TZ=UTC
+    command: python train_hybrid_model.py
+    # 设置内存限制（避免OOM）
+    mem_limit: 4g
+    memswap_limit: 4g
