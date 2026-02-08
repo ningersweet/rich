@@ -239,7 +239,7 @@ def main():
         # 如果无持仓且有交易信号，开仓
         if position is None and row['should_trade']:
             entry_price = klines_backtest_clean.loc[i, 'close']
-            quantity = (equity * 0.01) / entry_price  # 1%仓位
+            quantity = (equity * 0.10) / entry_price  # 10%仓位
             
             position = {
                 'side': row['direction'],
