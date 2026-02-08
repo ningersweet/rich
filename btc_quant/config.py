@@ -82,7 +82,11 @@ def load_config(path: Path | None = None) -> Config:
     如果未提供 path，默认使用项目根目录下的 config.yaml。
     """
 
-    cfg_path = path or CONFIG_PATH
+    if path is None:
+        cfg_path = CONFIG_PATH
+    else:
+        cfg_path = Path(path) if isinstance(path, str) else path
+    
     if not cfg_path.exists():
         raise FileNotFoundError(f"配置文件不存在: {cfg_path}")
 

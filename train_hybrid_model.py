@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 def extract_neural_features(
     neural_model: NeuralTrainedModel,
     features: pd.DataFrame,
+    batch_size: int = 1024,  # 分批处理减少内存
 ) -> pd.DataFrame:
     """使用训练好的神经网络提取深层特征
     
@@ -56,15 +57,25 @@ def extract_neural_features(
         neural_model.sequence_length
     )
     
-    # 转换为Tensor
-    X_t = torch.from_numpy(X_seq).to(neural_model.device)
+    # 分批提取特征（减少内存压力）
+    all_features = []
     
-    # 提取特征（不做分类）
-    with torch.no_grad():
-        neural_feats = model.extract_features(X_t)
+    for i in range(0, len(X_seq), batch_size):
+        batch_X = X_seq[i:i+batch_size]
+        X_t = torch.from_numpy(batch_X).to(neural_model.device)
+        
+        with torch.no_grad():
+            batch_feats = model.extract_features(X_t)
+        
+        all_features.append(batch_feats.cpu().numpy())
+        
+        # 释放内存
+        del X_t, batch_feats
+    
+    # 合并所有批次
+    neural_feats_np = np.vstack(all_features)
     
     # 转换为DataFrame
-    neural_feats_np = neural_feats.cpu().numpy()
     feature_names = [f"neural_feat_{i}" for i in range(neural_feats_np.shape[1])]
     
     # 注意：序列化会导致前sequence_length-1个样本无特征
@@ -173,7 +184,8 @@ def train_hybrid_model(cfg):
     # 类别权重（缓解样本不平衡）
     class_weight_cfg = cfg.model.get("train", {}).get("class_weight", {})
     if class_weight_cfg:
-        class_weight = {int(k): float(v) for k, v in class_weight_cfg.items()}
+        # 映射标签：-1 -> 0, 0 -> 1, 1 -> 2
+        class_weight = {int(k) + 1: float(v) for k, v in class_weight_cfg.items()}
         lgbm_params["class_weight"] = class_weight
         logger.info(f"类别权重: {class_weight}")
     

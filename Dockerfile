@@ -27,6 +27,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY btc_quant/ ./btc_quant/
 COPY config.yaml .
 COPY train_and_backtest_rr_strategy.py .
+COPY train_hybrid_model.py .
 COPY test_leverage_positions.py .
 COPY visualize_backtest_results.py .
 COPY run_live.py .

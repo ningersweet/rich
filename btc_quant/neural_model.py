@@ -287,6 +287,21 @@ def train_neural_model(
     X_seq, y_seq = create_sequences(features, labels_mapped, sequence_length)
     print(f"序列数据形状: X={X_seq.shape}, y={y_seq.shape}")
     
+    # 清理数据：替换inf和nan
+    X_seq = np.nan_to_num(X_seq, nan=0.0, posinf=0.0, neginf=0.0)
+    
+    # 标准化输入数据（防止数值过大导致nan）
+    from sklearn.preprocessing import StandardScaler
+    scaler = StandardScaler()
+    
+    # Reshape为(n_samples * seq_len, n_features)进行标准化
+    original_shape = X_seq.shape
+    X_seq_reshaped = X_seq.reshape(-1, X_seq.shape[-1])
+    X_seq_scaled = scaler.fit_transform(X_seq_reshaped)
+    X_seq = X_seq_scaled.reshape(original_shape).astype(np.float32)
+    
+    print(f"标准化后数据范围: [{X_seq.min():.2f}, {X_seq.max():.2f}]")
+    
     # 划分训练集和验证集（80/20）
     split_idx = int(len(X_seq) * 0.8)
     X_train, X_val = X_seq[:split_idx], X_seq[split_idx:]
@@ -336,6 +351,10 @@ def train_neural_model(
             
             # 反向传播
             loss.backward()
+            
+            # 梯度裁剪（防止梯度爆炸和nan）
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            
             optimizer.step()
             
             epoch_loss += loss.item()
