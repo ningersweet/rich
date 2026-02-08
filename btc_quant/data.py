@@ -92,13 +92,23 @@ def download_klines_by_day(cfg: Config, start_date: datetime, end_date: datetime
                     "limit": limit,
                 }
                 
-                # 重试机制
-                max_retries = 3
+                # 重试机制（包含429频率限制处理）
+                max_retries = 5
                 for retry in range(max_retries):
                     try:
                         resp = requests.get(base_url + BINANCE_FAPI_KLINES_ENDPOINT, params=params, timeout=15)
                         resp.raise_for_status()
                         break
+                    except requests.exceptions.HTTPError as e:
+                        if resp.status_code == 429:  # 频率限制
+                            wait_time = min(60, (2 ** retry) * 5)  # 指数退避：5s, 10s, 20s, 40s, 60s
+                            print(f"\r⏸️  {date_str}: API限流，等待{wait_time}秒...", end="", flush=True)
+                            time.sleep(wait_time)
+                            if retry == max_retries - 1:
+                                print(f"\n❗ {date_str} API限流重试失败，跳过")
+                                break
+                        else:
+                            raise
                     except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
                         if retry < max_retries - 1:
                             wait_time = (retry + 1) * 2
@@ -120,7 +130,7 @@ def download_klines_by_day(cfg: Config, start_date: datetime, end_date: datetime
                     break
                 current_start = next_start
                 
-                time.sleep(0.1)  # 避免频繁请求
+                time.sleep(0.5)  # 避免触发币安API频率限制（每分钟最多120请求）
             
             # 保存当天数据
             if day_rows:
