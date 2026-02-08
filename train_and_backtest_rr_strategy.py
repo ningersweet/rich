@@ -46,7 +46,15 @@ def main():
     
     # 加载K线数据
     logger.info("\n【步骤1】加载K线数据")
-    klines = load_klines(cfg)
+    try:
+        klines = load_klines(cfg)
+    except FileNotFoundError:
+        logger.warning("未找到本地K线数据，开始下载...")
+        from btc_quant.data import download_historical_klines
+        data_path = download_historical_klines(cfg)
+        logger.info(f"数据下载完成: {data_path}")
+        klines = load_klines(cfg)
+    
     logger.info(f"总K线数: {len(klines):,}")
     logger.info(f"时间范围: {klines.index[0]} ~ {klines.index[-1]}")
     
