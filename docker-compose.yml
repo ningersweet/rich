@@ -7,7 +7,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: btc_quant_backtest
-    command: python run_backtest.py
+    command: python train_and_backtest_rr_strategy.py
     volumes:
       # 挂载配置文件（可以在宿主机修改配置）
       - ./config.yaml:/app/config.yaml:ro

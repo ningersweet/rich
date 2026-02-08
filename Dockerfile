@@ -26,7 +26,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 复制项目文件
 COPY btc_quant/ ./btc_quant/
 COPY config.yaml .
-COPY run_backtest.py .
+COPY train_and_backtest_rr_strategy.py .
+COPY test_leverage_positions.py .
+COPY visualize_backtest_results.py .
 COPY run_live.py .
 
 # 创建数据、模型、日志目录
