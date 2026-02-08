@@ -1,0 +1,115 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+ENV/
+env/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Logs
+logs
+*.log
+
+# Data files (large datasets)
+data
+!data/.gitkeep
+
+# Models (trained models can be large)
+models/**/*.pkl
+models/**/*.txt
+models/**/*.model
+models/**/*.bin
+!models/.gitkeep
+
+# Backtest results
+backtest/*.csv
+backtest/*.png
+backtest/*.jpg
+backtest/*.jpeg
+backtest/*.log
+!backtest/.gitkeep
+
+# Temporary files
+temp/
+tmp/
+*.tmp
+*.bak
+*.backup
+*_backup.*
+
+# Documentation build
+docs/_build/
+site/
+
+# Coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Docker
+.dockerignore
+
+# API Keys (防止泄露)
+*_api_key.txt
+secrets.yaml
+credentials.json
+
+# System files
+Thumbs.db
+.DS_Store
+
+# DeepSeek咨询结果（可选保留）
+deepseek_*.txt
+
+# 优化文档（已整合到README）
+OPTIMIZATION_SUMMARY.md
+
+config.yaml
+deepseek_config.yaml
+DEPLOY.md
+deploy_to_server.sh
