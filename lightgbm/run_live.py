@@ -79,6 +79,8 @@ def main() -> None:
     last_close_time = None
     last_signal: str | None = None
     last_signal_time = None
+    current_sig = None  # 当前信号，用于下单
+    current_features = None  # 当前特征，用于读取ATR
 
     starting_balance: float | None = None
     trading_disabled_due_to_loss = False
@@ -115,41 +117,53 @@ def main() -> None:
         try:
             df = fetch_latest_klines(symbol, interval, max_new_bars, base_url)
             latest = df.iloc[-1:]
-
-            # 若无新K线则跳过
             current_close_time = latest["close_time"].iloc[0]
-            if last_close_time is not None and current_close_time <= last_close_time:
-                time.sleep(poll_interval)
-                continue
-            last_close_time = current_close_time
+            current_price = float(latest["close"].iloc[0])
 
-            fl = build_features_and_labels(cfg, df)
-            latest_features = fl.features.iloc[[-1]]
+            # 检查是否有新K线
+            has_new_kline = (last_close_time is None or current_close_time > last_close_time)
+            
+            if has_new_kline:
+                # 有新K线，重新计算特征和预测
+                last_close_time = current_close_time
+                fl = build_features_and_labels(cfg, df)
+                latest_features = fl.features.iloc[[-1]]
+                current_features = latest_features  # 保存特征
 
-            sig = generate_signal(
-                cfg,
-                trained,
-                latest_features,
-                prev_signal=last_signal,
-                prev_signal_time=last_signal_time,
-                current_time=current_close_time,
-            )
-            if sig.signal != "flat":
-                last_signal = sig.signal
-                last_signal_time = current_close_time
+                sig = generate_signal(
+                    cfg,
+                    trained,
+                    latest_features,
+                    prev_signal=last_signal,
+                    prev_signal_time=last_signal_time,
+                    current_time=current_close_time,
+                )
+                current_sig = sig  # 保存信号
+                if sig.signal != "flat":
+                    last_signal = sig.signal
+                    last_signal_time = current_close_time
 
-            logger.info(
-                "最新K线时间=%s, 收盘价=%.2f, 信号=%s, prob_long=%.3f, prob_short=%.3f, prob_flat=%.3f",
-                current_close_time,
-                float(latest["close"].iloc[0]),
-                sig.signal,
-                sig.prob_long,
-                sig.prob_short,
-                sig.prob_flat,
-            )
+                logger.info(
+                    "[新K线] 时间=%s, 价格=%.2f, 信号=%s, prob_long=%.3f, prob_short=%.3f, prob_flat=%.3f",
+                    current_close_time,
+                    current_price,
+                    sig.signal,
+                    sig.prob_long,
+                    sig.prob_short,
+                    sig.prob_flat,
+                )
+            else:
+                # 无新K线，仅输出当前价格和持仓状态
+                logger.info(
+                    "[轮询] 时间=%s, 价格=%.2f, 持仓=%s",
+                    current_close_time,
+                    current_price,
+                    open_position_side,
+                )
 
             # 仅在启用交易且未触发日内亏损阈值时才尝试下单
-            if enable_trading:
+            # 并且必须有有效的信号（至少有一次新K线）
+            if enable_trading and current_sig is not None:
                 try:
                     current_balance = client.get_account_balance_usdt()
                 except Exception as e:  # noqa: BLE001
@@ -168,16 +182,17 @@ def main() -> None:
                         trading_disabled_due_to_loss = True
 
                 if not trading_disabled_due_to_loss:
-                    price = float(latest["close"].iloc[0])
+                    price = current_price
 
                     # 从特征中读取 ATR 供仓位管理使用
                     atr_val = None
-                    atr_col = f"atr_{cfg.features.get('atr_window', 14)}"
-                    if atr_col in latest_features.columns:
-                        atr_val = float(latest_features[atr_col].iloc[0])
+                    if current_features is not None:
+                        atr_col = f"atr_{cfg.features.get('atr_window', 14)}"
+                        if atr_col in current_features.columns:
+                            atr_val = float(current_features[atr_col].iloc[0])
 
                     # 根据信号控制开平仓
-                    if sig.signal == "flat":
+                    if current_sig.signal == "flat":
                         # 有持仓则平仓
                         if open_position_side != "flat" and open_position_qty > 0:
                             side = "SELL" if open_position_side == "long" else "BUY"
@@ -200,7 +215,7 @@ def main() -> None:
                             else:
                                 logger.error("平仓失败: %s", order_res.raw)
                     else:
-                        desired_side = sig.signal  # long / short
+                        desired_side = current_sig.signal  # long / short
 
                         # 若方向相反，先平掉原有持仓
                         if (
