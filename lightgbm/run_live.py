@@ -124,42 +124,42 @@ def main() -> None:
             has_new_kline = (last_close_time is None or current_close_time > last_close_time)
             
             if has_new_kline:
-                # 有新K线，重新计算特征和预测
+                # 有新K线，重新计算特征
                 last_close_time = current_close_time
                 fl = build_features_and_labels(cfg, df)
                 latest_features = fl.features.iloc[[-1]]
                 current_features = latest_features  # 保存特征
-
-                sig = generate_signal(
-                    cfg,
-                    trained,
-                    latest_features,
-                    prev_signal=last_signal,
-                    prev_signal_time=last_signal_time,
-                    current_time=current_close_time,
-                )
-                current_sig = sig  # 保存信号
-                if sig.signal != "flat":
-                    last_signal = sig.signal
-                    last_signal_time = current_close_time
-
-                logger.info(
-                    "[新K线] 时间=%s, 价格=%.2f, 信号=%s, prob_long=%.3f, prob_short=%.3f, prob_flat=%.3f",
-                    current_close_time,
-                    current_price,
-                    sig.signal,
-                    sig.prob_long,
-                    sig.prob_short,
-                    sig.prob_flat,
-                )
+                logger.info("[新K线] 时间=%s, 价格=%.2f", current_close_time, current_price)
             else:
-                # 无新K线，仅输出当前价格和持仓状态
-                logger.info(
-                    "[轮询] 时间=%s, 价格=%.2f, 持仓=%s",
-                    current_close_time,
-                    current_price,
-                    open_position_side,
-                )
+                # 无新K线，更新最后一根K线（实时价格可能变化）
+                df.iloc[-1, df.columns.get_loc("close")] = current_price
+                fl = build_features_and_labels(cfg, df)
+                latest_features = fl.features.iloc[[-1]]
+                current_features = latest_features
+                logger.info("[轮询] 时间=%s, 价格=%.2f (K线内更新)", current_close_time, current_price)
+
+            # 每次都重新预测
+            sig = generate_signal(
+                cfg,
+                trained,
+                latest_features,
+                prev_signal=last_signal,
+                prev_signal_time=last_signal_time,
+                current_time=current_close_time,
+            )
+            current_sig = sig  # 保存信号
+            if sig.signal != "flat":
+                last_signal = sig.signal
+                last_signal_time = current_close_time
+
+            logger.info(
+                "信号=%s, prob_long=%.3f, prob_short=%.3f, prob_flat=%.3f, 持仓=%s",
+                sig.signal,
+                sig.prob_long,
+                sig.prob_short,
+                sig.prob_flat,
+                open_position_side,
+            )
 
             # 仅在启用交易且未触发日内亏损阈值时才尝试下单
             # 并且必须有有效的信号（至少有一次新K线）
