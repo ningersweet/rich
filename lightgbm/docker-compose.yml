@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # ========== 回测服务 ==========
   backtest:
@@ -36,8 +34,7 @@ services:
       - MODE=paper
       # 确保配置文件中 enable_trading: false
     restart: unless-stopped
-    networks:
-      - quant_network
+    network_mode: host  # 使用宿主机网络，解决 SSL 连接问题
     depends_on:
       - backtest
     healthcheck:
