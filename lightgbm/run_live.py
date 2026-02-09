@@ -57,13 +57,14 @@ def main() -> None:
     # 检查当前模式
     mode = cfg.api.get("mode", "paper")
     if mode == "paper":
-        logger.warning("当前模式：模拟盘（paper），使用 API: %s", client.base_url)
-        logger.warning("将只生成信号，不会真实下单。")
-        enable_trading = False
+        logger.warning("当前模式：测试网（paper），使用 API: %s", client.base_url)
+        logger.warning("⚠️  将真实下单到币安测试网！")
     else:
-        logger.info("当前模式：实盘（live），使用 API: %s", client.base_url)
-        logger.warning("⚠️  将使用真实 API 下单！")
-        enable_trading = True
+        logger.warning("当前模式：实盘（live），使用 API: %s", client.base_url)
+        logger.warning("⚠️⚠️⚠️  将真实下单到币安实盘！！！")
+    
+    # 无论什么模式都启用下单
+    enable_trading = True
 
     symbol = cfg.symbol["name"]
     interval = cfg.symbol["interval"]
