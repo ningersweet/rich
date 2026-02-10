@@ -262,7 +262,7 @@ def main():
                     # 每日亏损检查
                     if daily_start_balance is not None:
                         daily_loss_pct = (daily_start_balance - current_balance) / daily_start_balance
-                        if daily_loss_pct > max_daily_loss_pct:
+                        if daily_loss_pct > -max_daily_loss_pct:  # 修复：判断亏损绝对值
                             trading_paused = True
                             pause_reason = 'daily_loss'
                             logger.error("🛑 触发每日最大亏损限制 %.2f%%, 暂停交易", daily_loss_pct * 100)
