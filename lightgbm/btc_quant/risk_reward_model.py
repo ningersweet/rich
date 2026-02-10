@@ -27,16 +27,27 @@ class RiskRewardModel:
     预测每笔交易的盈亏比，用于筛选高质量交易机会
     """
     
-    def __init__(self, params: Optional[Dict] = None):
+    def __init__(self, params: Optional[Dict] = None, loss_function: str = 'rmse'):
         """
         初始化盈亏比预测模型
         
         Args:
             params: LightGBM参数
+            loss_function: 损失函数类型 ('rmse', 'fair', 'huber', 'quantile')
         """
+        # DeepSeek第二周优化：支持多种损失函数
+        if loss_function == 'fair':
+            metric = 'fair'
+        elif loss_function == 'huber':
+            metric = 'huber'
+        elif loss_function == 'quantile':
+            metric = 'quantile'
+        else:
+            metric = 'rmse'
+        
         self.params = params or {
             'objective': 'regression',
-            'metric': 'rmse',
+            'metric': metric,
             'boosting_type': 'gbdt',
             'num_leaves': 31,
             'max_depth': 6,
@@ -46,6 +57,7 @@ class RiskRewardModel:
             'bagging_freq': 5,
             'verbose': -1,
         }
+        self.loss_function = loss_function
         self.model = None
         self.feature_importance = None
     
@@ -351,8 +363,15 @@ class TwoStageRiskRewardStrategy:
     完整的训练和预测流程
     """
     
-    def __init__(self):
-        self.rr_model = RiskRewardModel()
+    def __init__(self, loss_function: str = 'rmse'):
+        """
+        初始化两阶段策略
+        
+        Args:
+            loss_function: 损失函数类型 ('rmse', 'fair', 'huber', 'quantile')
+        """
+        self.loss_function = loss_function
+        self.rr_model = RiskRewardModel(loss_function=loss_function)
         self.dp_model = DirectionPeriodModel()
     
     def train(

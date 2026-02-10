@@ -189,6 +189,44 @@ def build_features_and_labels(cfg: Config, klines: pd.DataFrame) -> FeatureLabel
     
     # 价量协同：价格涨且成交量放大
     df["price_volume_corr"] = df["return_1"] * df["volume_change"]
+    
+    # === 新增：订单簿微观结构模拟特征 ===
+    # 虽然我们没有真实的订单簿数据，但可以通过K线数据模拟市场微观结构
+    
+    # 特征1：买卖压力不平衡（基于上下影线比例）
+    # 上影线：卖压（high - close）
+    # 下影线：买压（close - low）
+    upper_shadow = df["high"] - df[["open", "close"]].max(axis=1)
+    lower_shadow = df[["open", "close"]].min(axis=1) - df["low"]
+    df["buy_sell_pressure"] = (lower_shadow - upper_shadow) / (df["high"] - df["low"] + 1e-9)
+    
+    # 特征2：成交量加权的买卖压力（结合成交量）
+    # 正值：买盘强（收阳+成交量大）
+    # 负值：卖盘强（收阴+成交量大）
+    candle_body = (df["close"] - df["open"]) / (df["open"] + 1e-9)
+    df["volume_weighted_pressure"] = candle_body * df["volume_ratio"]
+    
+    # 特征3：大单占比（模拟）- 成交量突增时假设有大单
+    # 单根K线成交量 / 近期平均成交量的比值
+    # >2.0 认为可能有大单进场
+    df["large_order_ratio"] = df["volume"] / (df["volume"].rolling(window=20).mean() + 1e-9)
+    
+    # 特征4：累积买卖压力（多根K线聚合）
+    # 计算过去5根K线的买卖压力总和
+    df["cumulative_pressure_5"] = df["buy_sell_pressure"].rolling(window=5).sum()
+    df["cumulative_pressure_10"] = df["buy_sell_pressure"].rolling(window=10).sum()
+    
+    # 特征5：成交量分布不均衡度
+    # 近期5根K线成交量的标准差 / 均值（波动性）
+    vol_5_std = df["volume"].rolling(window=5).std()
+    vol_5_mean = df["volume"].rolling(window=5).mean()
+    df["volume_imbalance"] = vol_5_std / (vol_5_mean + 1e-9)
+    
+    # 特征6：价格偏离成交量加权均价（VWAP模拟）
+    # 使用 (high + low + close) / 3 * volume 作为典型价格
+    typical_price = (df["high"] + df["low"] + df["close"]) / 3
+    vwap_20 = (typical_price * df["volume"]).rolling(window=20).sum() / (df["volume"].rolling(window=20).sum() + 1e-9)
+    df["price_vwap_diff"] = (df["close"] - vwap_20) / (vwap_20 + 1e-9)
 
     # === 9. 波动率regime特征 ===
     # 近期波动率相对长期波动率
@@ -220,6 +258,42 @@ def build_features_and_labels(cfg: Config, klines: pd.DataFrame) -> FeatureLabel
     # 距离近期高/低点的距离
     df["dist_to_high"] = (rolling_max - df["close"]) / (df["close"] + 1e-9)
     df["dist_to_low"] = (df["close"] - rolling_min) / (df["close"] + 1e-9)
+    
+    # === 新增：条件交互特征（DeepSeek重点推荐）===
+    # 这些特征捕捉不同指标在特定条件下的协同效应
+    
+    # 交互特征1：RSI超卖时的成交量效应
+    # 当RSI<30且成交量放大时，可能是底部信号
+    is_oversold = (df[f"rsi_{rsi_window}"] < 30).astype("float32")
+    df["oversold_volume_effect"] = is_oversold * df["volume_spike_ratio"]
+    
+    # 交互特征2：RSI超买时的成交量效应
+    # 当RSI>70且成交量放大时，可能是顶部信号
+    is_overbought = (df[f"rsi_{rsi_window}"] > 70).astype("float32")
+    df["overbought_volume_effect"] = is_overbought * df["volume_spike_ratio"]
+    
+    # 交互特征3：趋势中的动量加速
+    # 在明确趋势中（价格远离均线），动量指标更有效
+    trend_strength = df["close_ma_25_diff"].abs()  # 使用MA25离差率衡量趋势强度
+    df["trend_momentum_interaction"] = trend_strength * df["momentum_10"]
+    
+    # 交互特征4：波动率扩张中的突破
+    # 波动率扩张时，价格突破更可靠
+    volatility_expansion = (df["atr_change"] > 0).astype("float32")
+    price_near_high = (df["price_position"] > 0.8).astype("float32")
+    df["breakout_in_volatility"] = volatility_expansion * price_near_high
+    
+    # 交互特征5：布林带挤压后的突破
+    # 布林带宽度收窄（波动率压缩）后，往往伴随大行情
+    bb_squeeze = (df["bb_width_pct"] < df["bb_width_pct"].rolling(window=50).quantile(0.2)).astype("float32")
+    df["squeeze_breakout_potential"] = bb_squeeze * df["momentum_5"].abs()
+    
+    # 交互特征6：成交量与价格背离的强度
+    # 价格创新高但成交量萎缩 = 看跌背离
+    # 价格创新低但成交量萎缩 = 看涨背离
+    price_momentum = df["close"].pct_change(5)
+    volume_momentum = df["volume"].pct_change(5)
+    df["price_volume_divergence_strength"] = price_momentum * (-volume_momentum)  # 反向相关
 
     # === 11. 市场状态regime ===
     df["market_regime"] = _market_regime(df)

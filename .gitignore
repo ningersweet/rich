@@ -65,6 +65,7 @@ backtest/*.png
 backtest/*.jpg
 backtest/*.jpeg
 backtest/*.log
+backtest/*.txt
 !backtest/.gitkeep
 
 # Temporary files
@@ -113,3 +114,11 @@ config.yaml
 deepseek_config.yaml
 DEPLOY.md
 deploy_to_server.sh
+
+# 临时测试结果文件
+*_results_*.csv
+*.log
+
+# DeepSeek查询文件
+call_deepseek.py
+deepseek_query.md
