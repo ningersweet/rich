@@ -486,7 +486,7 @@ class TwoStageRiskRewardStrategy:
             'predicted_rr': rr_pred,
             'direction': 0,
             'direction_prob': 0.0,
-            'holding_period': 0,
+            'holding_period': 0.0,  # 修复：使用float避免类型警告
             'should_trade': False,
         }, index=X.index)
         
