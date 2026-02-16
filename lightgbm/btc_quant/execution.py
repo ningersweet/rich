@@ -28,6 +28,7 @@ class BinanceFuturesClient:
         self.api_key = cfg.api.get("key", "")
         self.api_secret = cfg.api.get("secret", "").encode()
         self.mode = cfg.api.get("mode", "paper")
+        self._dual_side_position = None  # 缓存持仓模式
 
     def _headers(self) -> dict:
         return {"X-MBX-APIKEY": self.api_key}
@@ -53,6 +54,20 @@ class BinanceFuturesClient:
                 return float(item.get("balance", 0.0))
         return 0.0
 
+    def _check_dual_side_position(self) -> bool:
+        """检查账户是否开启双向持仓模式。"""
+        if self._dual_side_position is not None:
+            return self._dual_side_position
+        
+        try:
+            data = self._request("GET", "/fapi/v1/positionSide/dual", signed=True)
+            self._dual_side_position = data.get("dualSidePosition", False)
+        except Exception:  # noqa: BLE001
+            # 如果查询失败，默认为单向持仓
+            self._dual_side_position = False
+        
+        return self._dual_side_position
+    
     def get_open_position(self, symbol: str) -> dict:
         """获取指定合约当前持仓信息，若无持仓则返回空字典。"""
 
@@ -70,14 +85,22 @@ class BinanceFuturesClient:
         quantity: float,
         reduce_only: bool = False,
     ) -> OrderResult:
+        """下市价单，自动适配单向/双向持仓模式。"""
         params = {
             "symbol": symbol,
             "side": side,
             "type": "MARKET",
             "quantity": quantity,
-            "positionSide": position_side,
-            "reduceOnly": "true" if reduce_only else "false",
         }
+        
+        # 如果是双向持仓模式，需要添加 positionSide
+        if self._check_dual_side_position():
+            params["positionSide"] = position_side
+        
+        # 如果是平仓单，添加 reduceOnly
+        if reduce_only:
+            params["reduceOnly"] = True
+        
         try:
             data = self._request("POST", "/fapi/v1/order", params=params, signed=True)
             return OrderResult(success=True, raw=data)
