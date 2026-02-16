@@ -217,42 +217,42 @@ def main():
                                 logger.info("✅ 解除每日亏损暂停")
                         except Exception as e:
                             logger.warning("获取余额失败: %s", e)
-                
-                # 构建特征
-                feature_label_data = build_features_and_labels(cfg, klines)
-                X_full = feature_label_data.features
-                
-                if len(X_full) == 0:
-                    logger.warning("特征为空，跳过")
-                    continue
-                
-                # 数据对齐
-                min_len = min(len(klines), len(X_full))
-                klines_aligned = klines.iloc[-min_len:].reset_index(drop=True)
-                X_full = X_full.iloc[-min_len:].reset_index(drop=True)
-                
-                # 提取TOP30特征
-                X_top30 = X_full[top_30_features]
-                
-                # 生成预测
-                predictions_dict = strategy.predict(
-                    X_top30,
-                    rr_threshold=rr_threshold,
-                    prob_threshold=prob_threshold
-                )
-                
-                # 取最后一个预测
-                should_trade = predictions_dict['should_trade'].iloc[-1]
-                predicted_rr = predictions_dict['predicted_rr'].iloc[-1]
-                direction = predictions_dict['direction'].iloc[-1]
-                direction_prob = predictions_dict['direction_prob'].iloc[-1]
-                holding_period = min(predictions_dict['holding_period'].iloc[-1], 30)
-                
-                logger.info("📊 信号: should_trade=%s, RR=%.2f, direction=%d, prob=%.3f, period=%d",
-                           should_trade, predicted_rr, direction, direction_prob, holding_period)
             else:
                 logger.info("[轮询] 时间=%s, 价格=%.2f (K线内更新)", current_close_time, current_price)
-                should_trade = False  # K线内不交易
+            
+            # 每次轮询都预测（无论是否新K线）
+            # 构建特征
+            feature_label_data = build_features_and_labels(cfg, klines)
+            X_full = feature_label_data.features
+            
+            if len(X_full) == 0:
+                logger.warning("特征为空，跳过")
+                continue
+            
+            # 数据对齐
+            min_len = min(len(klines), len(X_full))
+            klines_aligned = klines.iloc[-min_len:].reset_index(drop=True)
+            X_full = X_full.iloc[-min_len:].reset_index(drop=True)
+            
+            # 提取TOP30特征
+            X_top30 = X_full[top_30_features]
+            
+            # 生成预测
+            predictions_dict = strategy.predict(
+                X_top30,
+                rr_threshold=rr_threshold,
+                prob_threshold=prob_threshold
+            )
+            
+            # 取最后一个预测
+            should_trade = predictions_dict['should_trade'].iloc[-1]
+            predicted_rr = predictions_dict['predicted_rr'].iloc[-1]
+            direction = predictions_dict['direction'].iloc[-1]
+            direction_prob = predictions_dict['direction_prob'].iloc[-1]
+            holding_period = min(predictions_dict['holding_period'].iloc[-1], 30)
+            
+            logger.info("📊 信号: should_trade=%s, RR=%.2f, direction=%d, prob=%.3f, period=%d",
+                       should_trade, predicted_rr, direction, direction_prob, holding_period)
             
             # 风控检查
             if enable_trading and not trading_paused:
