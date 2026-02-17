@@ -131,8 +131,8 @@ def main():
     stop_loss_pct = -0.03  # 固定止损-3%
     max_daily_loss_pct = -0.20  # 每日最大亏损-20%
     max_drawdown_pause = 0.06  # 回撤>6%暂停交易
-    rr_threshold = 2.0  # RR阈值（原2.5，2026-02-13调整为2.0）
-    prob_threshold = 0.65  # 置信度阈值（原0.75，2026-02-13调整为0.65）
+    rr_threshold = 2.5  # RR阈值（最佳参数，2026-02-17回测验证）
+    prob_threshold = 0.75  # 置信度阈值（最佳参数，2026-02-17回测验证）
     
     logger.info("📊 策略参数：")
     logger.info("  最大敞口: %.1f倍", max_exposure)
@@ -152,7 +152,8 @@ def main():
     open_position_qty = 0.0
     open_entry_price = 0.0
     open_exposure = 0.0  # 当前持仓敞口
-    max_profit_pct = 0.0  # 追踪止损用
+    open_entry_idx = 0  # 开仓时的索引（用于计算持仓时间）
+    predicted_holding_period = 0  # 预测的持仓周期
     
     # 风控状态
     starting_balance = None
@@ -287,75 +288,50 @@ def main():
                 except Exception as e:
                     logger.warning("风控检查失败: %s", e)
             
-            # 平仓逻辑：严格止损 + 动态止盈
+            # 平仓逻辑：持仓周期
             if enable_trading and open_position_side != "flat":
                 try:
-                    # 计算价格变化
-                    if open_position_side == "long":
-                        price_change_pct = (current_price - open_entry_price) / open_entry_price
-                    else:
-                        price_change_pct = (open_entry_price - current_price) / open_entry_price
-                    
-                    # 1. 固定止损检查（-3%，不受任何影响）
-                    stop_loss_triggered = (price_change_pct <= stop_loss_pct)
-                    
-                    # 2. 动态止盈逻辑
-                    trailing_stop_triggered = False
-                    take_profit_triggered = False
-                    
-                    if price_change_pct > 0:  # 盈利时才启动
-                        max_profit_pct = max(max_profit_pct, price_change_pct)
+                    # 只在新K线时检查持仓周期
+                    if is_new_bar:
+                        current_idx = len(klines) - 1
+                        bars_held = current_idx - open_entry_idx
                         
-                        # 2.1 固定止盈：盈利达到3%就锁定部分利润
-                        if price_change_pct >= 0.03:
-                            take_profit_triggered = True
-                        
-                        # 2.2 追踪止盈：盈利>1.5%后，回撤40%触发
-                        elif price_change_pct > 0.015:
-                            profit_retracement = (max_profit_pct - price_change_pct) / max_profit_pct
-                            if profit_retracement > 0.40:  # 从高点回落40%
-                                trailing_stop_triggered = True
-                    
-                    # 3. 决定是否平仓（只有止损或止盈才平仓）
-                    should_close = stop_loss_triggered or trailing_stop_triggered or take_profit_triggered
-                    
-                    if should_close:
-                        # 平仓
-                        side = "SELL" if open_position_side == "long" else "BUY"
-                        position_side = "LONG" if open_position_side == "long" else "SHORT"
-                        
-                        reason = ""
-                        if stop_loss_triggered:
-                            reason = "🛑 固定止损"
-                        elif take_profit_triggered:
-                            reason = "🎯 固定止盈(3%)"
-                        elif trailing_stop_triggered:
-                            reason = "📊 追踪止盈(最高{:.2f}%)".format(max_profit_pct * 100)
-                        
-                        logger.info("📤 平仓 %s, 数量=%.4f, 原因=%s, 当前盈亏=%.2f%%, 最高盈亏=%.2f%%",
-                                   open_position_side, open_position_qty, reason, 
-                                   price_change_pct * 100, max_profit_pct * 100)
-                        
-                        order_res = client.place_market_order(
-                            symbol, side, position_side, open_position_qty, reduce_only=True
-                        )
-                        
-                        if order_res.success:
-                            logger.info("✅ 平仓成功: %s", order_res.raw)
-                            
-                            # 更新统计
-                            if price_change_pct > 0:
-                                consecutive_losses = 0
+                        if bars_held >= predicted_holding_period:
+                            # 计算价格变化
+                            if open_position_side == "long":
+                                price_change_pct = (current_price - open_entry_price) / open_entry_price
                             else:
-                                consecutive_losses += 1
+                                price_change_pct = (open_entry_price - current_price) / open_entry_price
                             
-                            open_position_side = "flat"
-                            open_position_qty = 0.0
-                            open_entry_price = 0.0
-                            open_exposure = 0.0
-                            max_profit_pct = 0.0
-                        else:
-                            logger.error("❌ 平仓失败: %s", order_res.raw)
+                            # 平仓
+                            side = "SELL" if open_position_side == "long" else "BUY"
+                            position_side = "LONG" if open_position_side == "long" else "SHORT"
+                            
+                            logger.info("📤 平仓 %s, 数量=%.4f, 原因=持仓周期(%d)K线, 盈亏=%.2f%%",
+                                       open_position_side, open_position_qty, predicted_holding_period,
+                                       price_change_pct * 100)
+                            
+                            order_res = client.place_market_order(
+                                symbol, side, position_side, open_position_qty, reduce_only=True
+                            )
+                            
+                            if order_res.success:
+                                logger.info("✅ 平仓成功: %s", order_res.raw)
+                                
+                                # 更新统计
+                                if price_change_pct > 0:
+                                    consecutive_losses = 0
+                                else:
+                                    consecutive_losses += 1
+                                
+                                open_position_side = "flat"
+                                open_position_qty = 0.0
+                                open_entry_price = 0.0
+                                open_exposure = 0.0
+                                open_entry_idx = 0
+                                predicted_holding_period = 0
+                            else:
+                                logger.error("❌ 平仓失败: %s", order_res.raw)
                 
                 except Exception as e:
                     logger.exception("平仓逻辑异常: %s", e)
@@ -402,7 +378,8 @@ def main():
                             open_position_qty = quantity
                             open_entry_price = current_price
                             open_exposure = optimal_exposure
-                            max_profit_pct = 0.0
+                            open_entry_idx = len(klines) - 1  # 记录开仓时的索引
+                            predicted_holding_period = int(holding_period)  # 记录预测周期
                         else:
                             logger.error("❌ 开仓失败: %s", order_res.raw)
                 
