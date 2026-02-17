@@ -131,8 +131,8 @@ def main():
     stop_loss_pct = -0.03  # 固定止损-3%
     max_daily_loss_pct = -0.20  # 每日最大亏损-20%
     max_drawdown_pause = 0.06  # 回撤>6%暂停交易
-    rr_threshold = 2.5  # RR阈值（最佳参数，2026-02-17回测验证）
-    prob_threshold = 0.75  # 置信度阈值（最佳参数，2026-02-17回测验证）
+    rr_threshold = 1.5  # RR阈值（临时降低用于测试下单，2026-02-17）
+    prob_threshold = 0.5  # 置信度阈值（临时降低用于测试下单，2026-02-17）
     
     logger.info("📊 策略参数：")
     logger.info("  最大敞口: %.1f倍", max_exposure)
