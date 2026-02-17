@@ -19,7 +19,6 @@ COPY btc_quant/ ./btc_quant/
 COPY config.yaml .
 
 # 复制运行脚本
-COPY run_live.py .
 COPY run_live_dynamic_exposure.py .
 
 # 创建目录
