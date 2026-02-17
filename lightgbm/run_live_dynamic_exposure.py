@@ -287,7 +287,7 @@ def main():
                 except Exception as e:
                     logger.warning("风控检查失败: %s", e)
             
-            # 平仓逻辑
+            # 平仓逻辑：严格止损 + 动态止盈
             if enable_trading and open_position_side != "flat":
                 try:
                     # 计算价格变化
@@ -296,28 +296,28 @@ def main():
                     else:
                         price_change_pct = (open_entry_price - current_price) / open_entry_price
                     
-                    # 固定止损检查
-                    stop_loss_triggered = (price_change_pct < stop_loss_pct)
+                    # 1. 固定止损检查（-3%，不受任何影响）
+                    stop_loss_triggered = (price_change_pct <= stop_loss_pct)
                     
-                    # 追踪止损检查
+                    # 2. 动态止盈逻辑
                     trailing_stop_triggered = False
-                    if price_change_pct > 0.01:  # 盈利>1%
+                    take_profit_triggered = False
+                    
+                    if price_change_pct > 0:  # 盈利时才启动
                         max_profit_pct = max(max_profit_pct, price_change_pct)
-                        profit_retracement = (max_profit_pct - price_change_pct) / max_profit_pct
-                        if profit_retracement > 0.5:  # 回吐>50%
-                            trailing_stop_triggered = True
+                        
+                        # 2.1 固定止盈：盈利达到3%就锁定部分利润
+                        if price_change_pct >= 0.03:
+                            take_profit_triggered = True
+                        
+                        # 2.2 追踪止盈：盈利>1.5%后，回撤40%触发
+                        elif price_change_pct > 0.015:
+                            profit_retracement = (max_profit_pct - price_change_pct) / max_profit_pct
+                            if profit_retracement > 0.40:  # 从高点回落40%
+                                trailing_stop_triggered = True
                     
-                    # 新信号平仓检查（方向改变或flat）
-                    signal_changed = False
-                    if is_new_bar:
-                        if not should_trade:
-                            signal_changed = True
-                        elif direction == 1 and open_position_side == "short":
-                            signal_changed = True
-                        elif direction == -1 and open_position_side == "long":
-                            signal_changed = True
-                    
-                    should_close = stop_loss_triggered or trailing_stop_triggered or signal_changed
+                    # 3. 决定是否平仓（只有止损或止盈才平仓）
+                    should_close = stop_loss_triggered or trailing_stop_triggered or take_profit_triggered
                     
                     if should_close:
                         # 平仓
@@ -326,14 +326,15 @@ def main():
                         
                         reason = ""
                         if stop_loss_triggered:
-                            reason = "固定止损"
+                            reason = "🛑 固定止损"
+                        elif take_profit_triggered:
+                            reason = "🎯 固定止盈(3%)"
                         elif trailing_stop_triggered:
-                            reason = "追踪止损"
-                        elif signal_changed:
-                            reason = "信号变化"
+                            reason = "📊 追踪止盈(最高{:.2f}%)".format(max_profit_pct * 100)
                         
-                        logger.info("📤 平仓 %s, 数量=%.4f, 原因=%s, 盈亏=%.2f%%",
-                                   open_position_side, open_position_qty, reason, price_change_pct * 100)
+                        logger.info("📤 平仓 %s, 数量=%.4f, 原因=%s, 当前盈亏=%.2f%%, 最高盈亏=%.2f%%",
+                                   open_position_side, open_position_qty, reason, 
+                                   price_change_pct * 100, max_profit_pct * 100)
                         
                         order_res = client.place_market_order(
                             symbol, side, position_side, open_position_qty, reduce_only=True
