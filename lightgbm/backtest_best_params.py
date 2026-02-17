@@ -41,13 +41,14 @@ def backtest_holding_period_only(klines, predictions, initial_balance=1000.0, ma
             bars_held = i - position['entry_idx']
             
             if bars_held >= position['hold_period']:
-                # 计算盈亏
+                # 计算盈亏（真复利：使用实时权益）
                 if position['side'] == 1:
                     price_change_pct = (current_price - position['entry_price']) / position['entry_price']
                 else:
                     price_change_pct = (position['entry_price'] - current_price) / position['entry_price']
-                
-                pnl = position['position_value'] * price_change_pct * position['exposure']
+                            
+                # 真复利：使用实时 equity 作为基准
+                pnl = equity * price_change_pct * position['exposure']
                 equity += pnl
                 
                 # 检查爆仓
@@ -142,8 +143,9 @@ def backtest_holding_period_only(klines, predictions, initial_balance=1000.0, ma
             price_change_pct = (final_price - position['entry_price']) / position['entry_price']
         else:
             price_change_pct = (position['entry_price'] - final_price) / position['entry_price']
-        
-        pnl = position['position_value'] * price_change_pct * position['exposure']
+            
+        # 真复利：使用实时权益
+        pnl = equity * price_change_pct * position['exposure']
         equity += pnl
         
         if equity <= 0:
