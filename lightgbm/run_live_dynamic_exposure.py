@@ -288,50 +288,61 @@ def main():
                 except Exception as e:
                     logger.warning("风控检查失败: %s", e)
             
-            # 平仓逻辑：持仓周期
+            # 平仓逻辑：持仓周期 + 止损检查
             if enable_trading and open_position_side != "flat":
                 try:
-                    # 只在新K线时检查持仓周期
-                    if is_new_bar:
-                        current_idx = len(klines) - 1
-                        bars_held = current_idx - open_entry_idx
+                    current_idx = len(klines) - 1
+                    bars_held = current_idx - open_entry_idx
+                    
+                    # 计算当前盈亏
+                    if open_position_side == "long":
+                        price_change_pct = (current_price - open_entry_price) / open_entry_price
+                    else:
+                        price_change_pct = (open_entry_price - current_price) / open_entry_price
+                    
+                    # 止损检查（每次轮询都检查）
+                    should_close = False
+                    close_reason = ""
+                    
+                    if price_change_pct < stop_loss_pct:
+                        should_close = True
+                        close_reason = f"止损({price_change_pct*100:.2f}% < {stop_loss_pct*100:.1f}%)"
+                    
+                    # 持仓周期检查（只在新K线时检查）
+                    elif is_new_bar and bars_held >= predicted_holding_period:
+                        should_close = True
+                        close_reason = f"持仓周期({bars_held}/{predicted_holding_period})K线"
+                    
+                    # 执行平仓
+                    if should_close:
+                        side = "SELL" if open_position_side == "long" else "BUY"
+                        position_side = "LONG" if open_position_side == "long" else "SHORT"
                         
-                        if bars_held >= predicted_holding_period:
-                            # 计算价格变化
-                            if open_position_side == "long":
-                                price_change_pct = (current_price - open_entry_price) / open_entry_price
+                        logger.info("📤 平仓 %s, 数量=%.4f, 原因=%s, 盈亏=%.2f%%",
+                                   open_position_side, open_position_qty, close_reason,
+                                   price_change_pct * 100)
+                        
+                        order_res = client.place_market_order(
+                            symbol, side, position_side, open_position_qty, reduce_only=True
+                        )
+                        
+                        if order_res.success:
+                            logger.info("✅ 平仓成功: %s", order_res.raw)
+                            
+                            # 更新统计
+                            if price_change_pct > 0:
+                                consecutive_losses = 0
                             else:
-                                price_change_pct = (open_entry_price - current_price) / open_entry_price
+                                consecutive_losses += 1
                             
-                            # 平仓
-                            side = "SELL" if open_position_side == "long" else "BUY"
-                            position_side = "LONG" if open_position_side == "long" else "SHORT"
-                            
-                            logger.info("📤 平仓 %s, 数量=%.4f, 原因=持仓周期(%d)K线, 盈亏=%.2f%%",
-                                       open_position_side, open_position_qty, predicted_holding_period,
-                                       price_change_pct * 100)
-                            
-                            order_res = client.place_market_order(
-                                symbol, side, position_side, open_position_qty, reduce_only=True
-                            )
-                            
-                            if order_res.success:
-                                logger.info("✅ 平仓成功: %s", order_res.raw)
-                                
-                                # 更新统计
-                                if price_change_pct > 0:
-                                    consecutive_losses = 0
-                                else:
-                                    consecutive_losses += 1
-                                
-                                open_position_side = "flat"
-                                open_position_qty = 0.0
-                                open_entry_price = 0.0
-                                open_exposure = 0.0
-                                open_entry_idx = 0
-                                predicted_holding_period = 0
-                            else:
-                                logger.error("❌ 平仓失败: %s", order_res.raw)
+                            open_position_side = "flat"
+                            open_position_qty = 0.0
+                            open_entry_price = 0.0
+                            open_exposure = 0.0
+                            open_entry_idx = 0
+                            predicted_holding_period = 0
+                        else:
+                            logger.error("❌ 平仓失败: %s", order_res.raw)
                 
                 except Exception as e:
                     logger.exception("平仓逻辑异常: %s", e)
