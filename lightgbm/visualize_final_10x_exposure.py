@@ -1,7 +1,31 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-10倍动态敞口 + 多层风控 - 完整可视化报告
+【可视化报告】10倍动态敞口 + 多层风控 - 完整图表分析
+
+用途：
+    生成回测结果的可视化报告，包含5个核心图表
+
+功能：
+    1. 读取回测结果CSV文件
+    2. 生成5个分析图表：
+       - 资金曲线 + 回撤
+       - 敞口分布
+       - 交易盈亏分布
+       - 月度统计
+       - 胜率/盈亏比趋势
+    3. 保存为PNG图片
+
+使用方法：
+    python visualize_final_10x_exposure.py
+    
+输入文件：
+    backtest/final_6x_fixed_capital_results_*.csv
+    
+输出文件：
+    backtest_visualization_*.png (5张图表)
+
+最后更新：2026-02-20
 """
 
 import os
@@ -81,7 +105,7 @@ def run_final_backtest():
         max_exposure=10.0,
         stop_loss_pct=-0.03,
         max_daily_loss_pct=-0.20,
-        max_drawdown_pause=0.06,
+        max_drawdown_pause=0.10,  # 回撤暂停10%（已从6%调整）
         use_trailing_stop=True
     )
     
@@ -236,9 +260,9 @@ def generate_summary_report(trades_df, result, output_path='backtest/final_10x_s
   策略类型: 动态敞口管理（基于信号质量自适应）
   最大敞口: 10倍（1000%）
   固定止损: -3%
-  追踪止损: 盈利>1%后保护（最多回吐50%）
+  追踪止损: 盈利>1%后保护（价格距最高点下降2%）
   每日最大亏损: -20%
-  回撤暂停阈值: 6%
+  回撤暂停阈值: 10%
   连续亏损惩罚: 开启
 
 【时间统计】

@@ -1,1016 +1,185 @@
-# 比特币合约量化交易系统
-
-## 📊 最新回测结果（最佳参数）
-
-### 🏆 核心指标
-
-| 指标 | 数值 | 说明 |
-|------|------|------|
-| **总收益率** | **7,035.71%** | 从1000 USDT增长到71,357 USDT |
-| **年化收益** | **~6,400%** | 13个月回测周期 |
-| **胜率** | **87.55%** | 633盈/90亏 |
-| **盈亏比** | **3.84** | 平均盈利1.19% / 平均亏损0.31% |
-| **交易数** | 723笔 | 平均每天0.5笔 |
-| **最大敞口** | 10倍 | 动态调整，最高可达10倍 |
-| **是否爆仓** | ✅ 否 | 安全通过整个回测周期 |
-
-### ⚙️ 最佳参数配置
-
-```yaml
-# 信号过滤阈值（关键！）
-prob_threshold: 0.75    # 方向置信度阈值（从0.65提升到75%）
-rr_threshold: 2.5       # 盈亏比阈值（从2.0提升到2.5）
-
-# 其他配置
-max_exposure: 10.0      # 最大敞口
-stop_loss_pct: -0.03    # 固定止损-3%
-max_daily_loss: -0.20   # 每日最大亏损-20%
-max_drawdown_pause: 0.06  # 回撤>6%暂停交易
-
-# 平仓策略
-closing_strategy: holding_period  # 使用预测的持仓周期
-prediction_frequency: 60s         # 每60秒预测一次
-```
-
-### 📅 回测详情
-
-- **回测周期**：2025-01-01 ~ 2026-02-07（13个月）
-- **数据集**：样本外数据（避免数据泄漏）
-- **K线数量**：38,585根（15分钟级别）
-- **初始资金**：1,000 USDT
-- **最终权益**：71,357.13 USDT
-
-### 📊 交易统计
-
-- **总交易数**：723笔
-- **盈利交易**：633笔 (87.55%)
-- **亏损交易**：90笔 (12.45%)
-- **平均盈亏**：+1.01%
-- **平均盈利**：+1.19%
-- **平均亏损**：-0.31%
-
-### 🔑 成功关键因素
-
-1. **严格信号过滤**：prob=0.75, rr=2.5，只交易最优质机会
-2. **持仓周期驱动**：使用模型预测的持仓周期平仓
-3. **动态敞口管理**：根据RR和Prob计算最优敞口（最高10倍）
-4. **每分钟预测**：高频预测，及时捕捉交易机会
-5. **多层风控**：追踪止损 + 每日亏损限制 + 回撤暂停
-
----
-
-## 📋 项目概述
-
-这是一个基于机器学习的比特币永续合约量化交易系统，采用**盈亏比驱动的两阶段预测架构**，在熊市环境下实现了**81.25%胜率**和**81.20%年化收益**（10%仓位）。系统使用LightGBM模型，支持Docker容器化部署。
-
-### 🎯 核心策略：盈亏比驱动 (Risk-Reward Driven)
-
-**策略理念：** 不追求高频交易，只在高盈亏比（RR>2.0）且高概率（>65%）时交易
-
-**两阶段架构：**
-1. **阶段1 - 盈亏比预测**：预测每笔交易的潜在盈亏比（RMSE 5.3）
-2. **阶段2 - 方向+周期预测**：只对高RR样本预测方向和最佳持有周期（准确率64%）
-
-**核心创新：**
-- 📊 **动态目标收益**：max(1%, 1×ATR) - 根据市场波动自适应
-- ⏱️ **持有周期预测**：模型预测最佳平仓时机（平均18根K线）
-- 🎯 **高质量交易筛选**：90%样本RR>2.0，严格控制入场条件
-- 🔄 **双向交易**：支持做多和做空，熊市期间做空占优（53.7%）
-
-### 📈 回测性能（2025-2026熊市）
-
-| 指标 | 数值 | 说明 |
-|------|------|------|
-| **胜率** | **81.25%** | 目标45%，超越36.25% |
-| **年化收益** | **81.20%** | 10%仓位配置 |
-| **最大回撤** | **-0.21%** | 风险极低 |
-| **实际盈亏比** | **2.91** | 接近预期3.0 |
-| **交易次数** | 1,024笔 | 474做多 + 550做空 |
-| **风险收益比** | 386.7 | 收益/回撤 |
-| **超额收益** | +106.01% | vs 买入持有-24.81% |
-
-### 🛠️ 技术特性
-
-- 🤖 **机器学习引擎**：LightGBM两阶段模型（盈亏比→方向+周期）
-- 📊 **特征工程**：41个技术指标（MACD、RSI、KDJ、布林带等）
-- 🔐 **风险管理**：严格的RR和概率阈值筛选
-- 🐳 **容器化部署**：Docker一键部署，环境隔离
-- 📝 **完整日志**：交易决策和执行全程记录
-
-### ⚙️ 推荐配置参数
-
-- **K线周期**: 15分钟
-- **仓位比例**: 10% （81%年化收益）
-- **RR阈值**: 2.0 （只交易盈亏比>2的机会）
-- **概率阈值**: 65% （方向预测置信度要求）
-- **目标收益**: 1% （动态调整）
-- **最大持有周期**: 50根K线
-
----
-
-## 📂 项目结构
-
-```
-rich/
-├── btc_quant/                      # 核心量化交易模块
-│   ├── __init__.py               # 包初始化
-│   ├── backtest.py               # 回测引擎（194行）
-│   ├── config.py                 # 配置管理（92行）
-│   ├── data.py                   # 数据下载与管理（411行）
-│   ├── features.py               # 特征工程（235行）
-│   ├── risk_reward_labels.py     # 🎯 盈亏比标签构建（311行）
-│   ├── risk_reward_model.py      # 🎯 两阶段模型（531行）
-│   ├── model.py                  # 基础模型训练（80行）
-│   ├── signals.py                # 交易信号生成（127行）
-│   ├── execution.py              # 订单执行（85行）
-│   ├── position.py               # 仓位管理（44行）
-│   └── monitor.py                # 日志监控（30行）
-│
-├── data/                         # 历史数据存储
-│   ├── daily/                    # 按天存储的K线数据
-│   │   └── BTCUSDT_15m/          # 15分钟K线，每天一个parquet文件
-│   ├── BTCUSDT_15m.parquet       # 合并后的完整数据（214,080条）
-│   └── .gitkeep
-│
-├── models/                       # 训练模型存储
-│   ├── risk_reward_strategy/     # 🎯 盈亏比驱动模型（最新）
-│   │   ├── stage1_rr_model.pkl   # 阶段1：盈亏比预测
-│   │   └── stage2_dp_model.pkl   # 阶段2：方向+周期预测
-│   ├── model_latest.pkl          # 基础模型
-│   └── .gitkeep
-│
-├── logs/                         # 日志文件
-│   ├── btc_quant.log
-│   └── .gitkeep
-│
-├── backtest/                     # 回测结果存储
-│   ├── best_params_trades.csv    # ✅ 最佳参数回测交易记录（723笔）
-│   ├── minute_by_minute_trades.csv  # ✅ 每分钟预测回测记录
-│   ├── final_10x_exposure_trades.csv  # advanced_risk回测记录
-│   ├── final_10x_summary.txt     # 回测统计摘要
-│   ├── final_10x_equity_curve.png  # 权益曲线图
-│   ├── final_10x_risk_analysis.png  # 风险分析图
-│   └── .gitkeep
-│
-├── 📄 配置文件
-├── config.yaml                   # 主配置文件
-├── deepseek_config.yaml          # DeepSeek API配置
-│
-├── 🚀 执行脚本
-├── train_and_backtest_rr_strategy.py  # 主训练+回测脚本（466行）
-├── backtest_best_params.py            # ✅ 最佳参数回测脚本（11K）
-├── backtest_minute_by_minute.py       # ✅ 每分钟预测回测脚本（11K）
-├── visualize_final_10x_exposure.py    # 回测结果可视化脚本
-├── run_live_dynamic_exposure.py       # ✅ 实盘交易脚本（已更新最佳参数）
-├── test_leverage_positions.py         # 杠杆测试脚本（271行）
-│
-├── 🐳 Docker部署
-├── Dockerfile                    # 镜像构建文件
-├── docker-compose.yml            # 编排配置（支持回测/模拟/实盘三模式）
-├── deploy.sh                     # 一键部署脚本
-├── .dockerignore
-│
-├── 📝 文档
-├── README.md                     # 项目说明
-├── strategy.md                   # 策略设计文档
-│
-├── ⚙️ 其他
-├── requirements.txt              # Python依赖库
-├── .gitignore                    # Git忽略配置
-└── .qoder/                       # Qoder配置目录
-```
-
-**代码统计：**
-- 核心模块：**2,150行** (btc_quant/)
-- 执行脚本：**1,341行** (训练/测试/可视化/实盘)
-- 总代码量：**3,491行**
-
----
-
-## 🏗️ 系统架构
-
-### 1. 核心模块说明
-
-#### 📥 `data.py` - 数据管理模块（411行）
-**功能：** 从币安下载历史K线数据，支持按天存储和断点续传
-
-**核心函数：**
-```python
-# 下载历史K线（自动检查已存在数据）
-download_historical_klines(cfg: Config) -> Path
-
-# 按天下载K线数据，支持断点续传
-download_klines_by_day(cfg, start_date, end_date, daily_dir) -> List[Path]
-
-# 合并日K线数据为单个文件
-merge_daily_klines(cfg, daily_dir) -> Path
-
-# 加载K线数据
-load_klines(cfg: Config) -> pd.DataFrame
-```
-
-**特点：**
-- 自动跳过已下载的数据
-- 网络故障自动重试（3次）
-- 按天分块存储，失败不影响整体
-- 时区处理：统一使用UTC时区
-
----
-
-#### 🔧 `features.py` - 特征工程模块（235行）
-**功能：** 构建41个技术指标特征和市场状态特征
-
-**特征列表（41个）：**
-```python
-基础特征（5个）：
-- return_1/3/7: 1/3/7根K线收益率
-- hl_ratio: 最高最低价比
-- oc_ratio: 开盘收盘价比
-
-均线特征（9个）：
-- ma_7/25/99: 简单移动平均线
-- ema_7/25/99: 指数移动平均线
-- close_ma_diff: 收盘价相对均线偏离
-
-技术指标（14个）：
-- RSI: 相对强弱指数
-- ATR, atr_pct, atr_change: 平均真实波幅及变化
-- bb_upper/lower/width/position: 布林带指标
-- macd/macd_signal/macd_hist/macd_hist_change: MACD指标
-- stoch_k/stoch_d: KDJ指标
-
-动量特征（3个）：
-- momentum_5/10/20: 不同周期动量
-
-成交量特征（4个）：
-- volume_ratio: 成交量比率
-- volume_ma_5: 5周期成交量均线
-- volume_change: 成交量变化率
-- price_volume_corr: 价量相关性
-
-价格位置（3个）：
-- price_position: 当前价格在周期内的位置
-- dist_to_high/low: 距离最高/最低价的距离
-
-市场状态（2个）：
-- volatility_regime: 波动率状态
-- market_regime: 市场状态（牛市=1/震荡=0/熊市=-1）
-```
-
-**核心函数：**
-```python
-# 构建特征和标签
-build_features_and_labels(cfg, klines) -> FeatureLabelData
-
-# 市场状态分类
-_market_regime(df) -> pd.Series  # 牛市/震荡/熊市
-
-# 技术指标计算
-_bollinger_bands(series, window, num_std=2.0)
-_macd(series, fast=12, slow=26, signal=9)
-_stochastic(high, low, close, k_window=14, d_window=3)
-```
-
----
-
-#### 🤖 `model.py` - 模型训练模块（80行）
-**功能：** 使用LightGBM训练三分类模型
-
-**模型配置：**
-```yaml
-算法：LightGBM GBDT
-目标：多分类（做多/观望/做空）
-树数量：200
-最大深度：6
-学习率：0.03
-正则化：L1=0.1, L2=0.1
-交叉验证：5折TimeSeriesSplit
-```
-
-**核心函数：**
-```python
-# 训练模型（含交叉验证）
-train_model(cfg, fl: FeatureLabelData) -> TrainedModel
-
-# 保存/加载模型
-save_model(cfg, trained: TrainedModel) -> Path
-load_model(cfg) -> TrainedModel
-```
-
-**输出：**
-- 模型文件：`models/model_latest.pkl`
-- 包含：模型、特征列表、标签编码器
-
----
-
-#### 📡 `signals.py` - 信号生成模块（127行）
-**功能：** 将模型预测概率转换为交易信号
-
-**信号转换规则：**
-```python
-做多条件：
-- P(long) > min_prob (0.50)
-- P(long) - P(short) > prob_gap_long (0.20)
-- ATR在合理范围内（0.003 - 0.15）
-- 价格位置合适（> 0.2）
-- 距上次信号超过冷却时间（15分钟）
-
-做空条件：
-- P(short) > min_prob (0.50)
-- P(short) - P(long) > prob_gap_short (0.20)
-- ATR在合理范围内
-- 价格位置合适（< 0.8）
-- 距上次信号超过冷却时间
-
-否则：观望
-```
-
-**核心函数：**
-```python
-# 生成实时信号
-generate_signal(cfg, trained, features_df) -> Signal
-
-# 批量生成回测信号
-generate_signals_for_backtest(cfg, trained, features, times) -> pd.Series
-```
-
----
-
-#### 📊 `backtest.py` - 回测引擎（194行）
-**功能：** 模拟历史交易，评估策略表现
-
-**回测流程：**
-1. 遍历每根K线
-2. 检查止损/止盈/移动止损
-3. 根据信号开仓/平仓
-4. 计算手续费和滑点
-5. 更新权益曲线
-6. 统计绩效指标
-
-**动态止损止盈：**
-```python
-止损：entry_price ± 2 * ATR
-止盈：entry_price ± 3 * ATR
-移动止损：1.5 * ATR
-```
-
-**绩效指标：**
-- 总收益率（%）
-- 最大回撤（%）
-- 胜率（%）
-- 交易笔数
-- 单笔平均盈亏
-- 盈亏比
-- 夏普比率
-
-**核心函数：**
-```python
-# 运行回测
-run_backtest(cfg, klines, signals, position_usdt) -> BacktestResult
-```
-
----
-
-#### 🎯 `execution.py` - 订单执行模块（85行）
-**功能：** 实盘交易时与币安API交互
-
-**支持操作：**
-- 获取账户余额
-- 获取当前持仓
-- 下市价单（开仓/平仓）
-- 设置杠杆倍数
-- 仓位模式切换（单向/双向）
-
-**风险控制：**
-- 强制平仓监控（保证金率 < 2%时平仓）
-- 单笔风险限制（5%）
-- 日内最大亏损限制（15%）
-
-**核心函数：**
-```python
-# 执行交易决策
-execute_signal(cfg, signal, position_manager, execution_api)
-
-# 下市价单
-place_market_order(symbol, side, quantity) -> dict
-
-# 获取账户信息
-get_account_balance() -> float
-get_position(symbol) -> dict
-```
-
----
-
-#### 💼 `position.py` - 仓位管理模块（44行）
-**功能：** 跟踪当前持仓状态
-
-**仓位信息：**
-```python
-class Position:
-    symbol: str              # 交易对
-    side: str                # 方向（long/short）
-    size: float              # 数量（币）
-    entry_price: float       # 开仓价格
-    entry_time: datetime     # 开仓时间
-    leverage: int            # 杠杆倍数
-    stop_loss: float         # 止损价格
-    take_profit: float       # 止盈价格
-    trailing_stop: float     # 移动止损
-```
-
----
-
-#### ⚙️ `config.py` - 配置管理模块（92行）
-**功能：** 加载和解析 `config.yaml`
-
-**配置结构：**
-```python
-class Config:
-    exchange: dict           # 交易所配置
-    symbol: dict             # 交易对和周期
-    api: dict                # API密钥（模拟盘/实盘）
-    paths: dict              # 数据/模型/日志路径
-    history_data: dict       # 历史数据时间范围
-    features: dict           # 特征工程参数
-    labeling: dict           # 标签构建参数
-    model: dict              # 模型超参数
-    strategy: dict           # 信号转换规则
-    risk: dict               # 风险管理参数
-    backtest: dict           # 回测配置
-    live: dict               # 实盘配置
-```
-
----
-
-#### 📝 `monitor.py` - 日志监控模块（30行）
-**功能：** 设置日志记录器
-
-**日志配置：**
-- 同时输出到控制台和文件
-- 日志级别：INFO
-- 日志文件：`logs/btc_quant.log`
-- 格式：`时间戳 [级别] 消息`
-
----
-
-### 2. 执行脚本说明
-
-#### 🔬 `run_backtest.py` - 回测执行脚本（105行）
-**功能：** 训练模型并在样本外数据上回测
-
-**执行流程：**
-```
-1. 下载历史数据（自动跳过已存在）
-2. 构建特征和标签（41个特征）
-3. 划分训练集和回测集
-   - 训练集：2020-2024年（175,290条）
-   - 回测集：2025-2026年（38,592条）
-4. 训练LightGBM模型（5折交叉验证）
-5. 在回测集上生成信号
-6. 运行回测，输出绩效指标
-```
-
-**使用方法：**
-```bash
-# 直接运行（需要Python环境）
-python run_backtest.py
-
-# 使用Docker运行
-docker run --rm -v $(pwd):/app -v $(pwd)/data:/app/data \
-  rich-backtest python run_backtest.py
-```
-
----
-
-#### 🚀 `run_live.py` - 实时交易脚本（273行）
-**功能：** 运行实盘或模拟盘交易
-
-**执行流程：**
-```
-1. 加载训练好的模型
-2. 初始化API连接（模拟盘/实盘）
-3. 定时轮询（每60秒）：
-   a. 获取最新K线数据
-   b. 构建特征
-   c. 模型预测
-   d. 生成交易信号
-   e. 执行交易（如果enable_trading=true）
-   f. 更新仓位管理
-   g. 风险监控
-4. 记录详细日志
-```
-
-**模式切换：**
-```bash
-# 模拟盘（不真实下单）
-export MODE=paper
-python run_live.py
-
-# 实盘（真实交易）
-export MODE=live
-python run_live.py
-```
-
----
-
-## 🔧 配置文件详解
-
-### `config.yaml` 核心配置（170行）
-
-#### 1. 交易所和交易对配置
-```yaml
-exchange:
-  name: "binance_futures"  # 币安永续合约
-
-symbol:
-  name: "BTCUSDT"          # 比特币/USDT
-  interval: "15m"          # K线周期：15分钟
-```
-
-#### 2. API密钥配置
-```yaml
-api:
-  paper:                   # 模拟盘配置
-    key: "YOUR_PAPER_KEY"
-    secret: "YOUR_PAPER_SECRET"
-    base_url: "https://fapi.binance.com"
-  
-  live:                    # 实盘配置
-    key: "YOUR_LIVE_KEY"
-    secret: "YOUR_LIVE_SECRET"
-    base_url: "https://fapi.binance.com"
-  
-  mode: "paper"            # 当前模式：paper/live
-```
-
-⚠️ **安全提示：** 
-- 模拟盘建议使用只读API密钥
-- 实盘密钥务必妥善保管，不要提交到代码仓库
-
-#### 3. 历史数据配置
-```yaml
-history_data:
-  start_time: "2020-01-01T00:00:00Z"  # 数据起始时间
-  end_time: "2026-02-07T00:00:00Z"    # 数据结束时间
-  limit: 1000                          # 单次请求K线数量
-  
-  # 训练集和回测集分割
-  train_start: "2020-01-01T00:00:00Z"
-  train_end: "2024-12-31T23:59:59Z"    # 训练到2024年底
-  backtest_start: "2025-01-01T00:00:00Z"  # 回测从2025年开始
-  backtest_end: "2026-02-07T00:00:00Z"
-```
-
-#### 4. 特征工程配置
-```yaml
-features:
-  max_features: 50         # 最大特征数
-  ma_windows: [7, 25, 99]  # 移动平均窗口
-  rsi_window: 14           # RSI周期
-  atr_window: 14           # ATR周期
-```
-
-#### 5. 标签构建配置
-```yaml
-labeling:
-  method: "future_return"  # 标签方法：未来收益率
-  horizon_bars: 4          # 预测周期：4根K线（1小时）
-  pos_threshold: 0.008     # 做多阈值：+0.8%
-  neg_threshold: -0.008    # 做空阈值：-0.8%
-```
-
-#### 6. 模型超参数配置
-```yaml
-model:
-  type: "lightgbm"
-  params:
-    num_leaves: 31         # 叶子节点数
-    max_depth: 6           # 最大深度
-    learning_rate: 0.03    # 学习率
-    n_estimators: 200      # 树的数量
-    reg_alpha: 0.1         # L1正则化
-    reg_lambda: 0.1        # L2正则化
-  train:
-    cv_folds: 5            # 交叉验证折数
-```
-
-#### 7. 信号策略配置
-```yaml
-strategy:
-  min_prob: 0.50           # 最小预测概率
-  prob_gap_long: 0.20      # 做多概率差
-  prob_gap_short: 0.20     # 做空概率差
-  signal_cooldown_minutes: 15  # 信号冷却时间
-  min_atr_pct: 0.003       # 最小波动率
-  max_atr_pct: 0.15        # 最大波动率
-```
-
-#### 8. 风险管理配置
-```yaml
-risk:
-  max_leverage: 40         # 最大杠杆倍数
-  risk_per_trade: 0.05     # 单笔风险：5%
-  max_daily_loss_pct: 0.15 # 日内最大亏损：15%
-  max_open_positions: 1    # 最大持仓数
-  liquidation_margin_ratio: 0.02  # 强平安全线：2%
-```
-
-⚠️ **风险提示：**
-- 40倍杠杆风险极高，维持保证金率仅0.5%
-- 当保证金率 < 2%时会自动平仓
-- 建议新手从低杠杆（5-10倍）开始
-
-#### 9. 回测配置
-```yaml
-backtest:
-  initial_balance: 1000.0  # 初始资金：1000 USDT
-  fee_rate: 0.0004         # 手续费率：0.04%
-  slippage: 0.0005         # 滑点：0.05%
-  
-  # 动态止损止盈
-  use_stop_loss: true
-  stop_loss_atr_multiplier: 2.0    # 止损 = 2倍ATR
-  use_take_profit: true
-  take_profit_atr_multiplier: 3.0  # 止盈 = 3倍ATR
-  use_trailing_stop: true
-  trailing_stop_atr_multiplier: 1.5  # 移动止损 = 1.5倍ATR
-```
-
-#### 10. 实盘配置
-```yaml
-live:
-  poll_interval_seconds: 60  # 轮询间隔：60秒
-  max_new_bars: 500          # 每次最多拉取500根K线
-```
-
----
-
-## 🐳 Docker 部署
-
-### 1. Dockerfile（37行）
-
-```dockerfile
-FROM python:3.10-slim
-
-WORKDIR /app
-
-# 设置环境变量
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    TZ=UTC
-
-# 安装系统依赖（编译LightGBM需要）
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends gcc g++ && \
-    rm -rf /var/lib/apt/lists/*
-
-# 安装Python依赖
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# 复制项目文件
-COPY btc_quant/ ./btc_quant/
-COPY config.yaml run_backtest.py run_live.py ./
-
-# 创建必要目录
-RUN mkdir -p data models logs
-
-CMD ["python", "run_live.py"]
-```
-
-### 2. docker-compose.yml（89行）
-
-提供三种服务：
-
-#### **回测服务（backtest）**
-```yaml
-services:
-  backtest:
-    build: .
-    container_name: btc_quant_backtest
-    command: python run_backtest.py
-    volumes:
-      - ./config.yaml:/app/config.yaml:ro
-      - ./data:/app/data
-      - ./models:/app/models
-      - ./logs:/app/logs
-    restart: "no"  # 回测完成后不重启
-```
-
-#### **模拟盘服务（paper_trading）**
-```yaml
-  paper_trading:
-    build: .
-    container_name: btc_quant_paper
-    command: python run_live.py
-    environment:
-      - MODE=paper
-    restart: unless-stopped
-    healthcheck:
-      interval: 60s
-      timeout: 10s
-      retries: 3
-```
-
-#### **实盘服务（live_trading）**
-```yaml
-  live_trading:
-    build: .
-    container_name: btc_quant_live
-    command: python run_live.py
-    environment:
-      - MODE=live
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: '2.0'
-          memory: 2G
-```
-
-### 3. 一键部署脚本 `deploy.sh`（229行）
-
-**功能：**
-- 检查Docker环境
-- 构建镜像
-- 运行回测/模拟盘/实盘
-- 查看日志
-- 停止/清理服务
-
-**使用方法：**
-```bash
-# 赋予执行权限
-chmod +x deploy.sh
-
-# 构建镜像
-./deploy.sh build
-
-# 运行回测
-./deploy.sh backtest
-
-# 启动模拟盘
-./deploy.sh paper
-
-# 启动实盘（谨慎）
-./deploy.sh live
-
-# 查看日志
-./deploy.sh logs paper_trading
-
-# 停止所有服务
-./deploy.sh stop
-
-# 清理所有
-./deploy.sh clean
-```
-
----
-
-## 📦 依赖库说明
-
-### `requirements.txt`（25行）
-
-```txt
-# 核心数据处理
-numpy>=1.21.0,<2.0.0       # 数值计算
-pandas>=1.3.0,<3.0.0       # 数据处理
-
-# 机器学习（CPU友好）
-lightgbm>=3.3.0,<5.0.0     # LightGBM模型
-scikit-learn>=1.0.0,<2.0.0 # 交叉验证、标签编码
-
-# 配置管理
-pyyaml>=6.0,<7.0.0         # YAML配置解析
-
-# HTTP请求（币安API）
-requests>=2.27.0,<3.0.0    # API请求
-
-# 模型持久化
-joblib>=1.1.0,<2.0.0       # 模型保存/加载
-
-# 数据存储
-pyarrow>=10.0.0,<15.0.0    # Parquet格式支持
-```
-
-**安装：**
-```bash
-pip install -r requirements.txt
-```
+# BTC量化交易系统
+
+> **版本**: v3.1  
+> **最后更新**: 2026-02-20  
+> **核心策略**: 盈亏比驱动的两阶段预测架构 + 动态敞口管理
 
 ---
 
 ## 🚀 快速开始
 
-### 方法1：Docker部署（推荐）
+### 最佳回测结果（2026-02-20验证）
 
-#### 步骤1：配置API密钥
+| 指标 | 数值 |
+|------|------|
+| **总收益率** | **2,838,309%** (约28384倍) |
+| **交易数** | 160笔（0.39笔/天） |
+| **胜率** | 78.75% |
+| **盈亏比** | 1.45 |
+| **最大回撤** | 10.00% |
+| **回测周期** | 2025-01-01 至 2026-02-17（13.5个月） |
+
+### 核心配置
+
+```yaml
+# 信号过滤
+prob_threshold: 0.70     # 方向置信度
+rr_threshold: 2.5        # 盈亏比阈值
+
+# 风控参数
+stop_loss_pct: -0.03     # 固定止损-3%
+max_exposure: 10.0       # 最大敞口10倍
+max_drawdown_pause: 0.10 # 回撤暂停10%
+
+# 追踪止损
+trailing_stop: 
+  enable: true
+  min_profit: 0.01       # 盈利>1%启动
+  price_drop: 0.02       # 价格距最高点下降2%触发
+```
+
+---
+
+## 📚 文档导航
+
+### 核心文档
+- **[TECHNICAL_DOCUMENTATION.md](TECHNICAL_DOCUMENTATION.md)** - 完整技术文档（1600+行）
+  - 系统概览
+  - 最新回测结果
+  - 技术架构详解
+  - 核心模块说明
+  - 风控机制详解
+  - 部署指南
+  - 优化计划
+
+### 快速链接
+- [系统概览](TECHNICAL_DOCUMENTATION.md#1-系统概览)
+- [最新回测结果](TECHNICAL_DOCUMENTATION.md#2-最新回测结果)
+- [风控机制](TECHNICAL_DOCUMENTATION.md#6-风控机制)
+- [部署架构](TECHNICAL_DOCUMENTATION.md#7-部署架构)
+- [优化计划](TECHNICAL_DOCUMENTATION.md#10-性能优化计划)
+
+---
+
+## 🛠️ 技术栈
+
+| 组件 | 技术 |
+|------|------|
+| 编程语言 | Python 3.10 |
+| 机器学习 | LightGBM GBDT |
+| 数据处理 | Pandas, NumPy |
+| API交互 | Requests (币安API) |
+| 容器化 | Docker, Docker Compose |
+| K线周期 | 15分钟 |
+
+---
+
+## 📦 快速部署
+
+### 1. 配置API密钥
 编辑 `config.yaml`：
 ```yaml
 api:
   paper:
-    key: "YOUR_PAPER_KEY"      # 填写模拟盘密钥
-    secret: "YOUR_PAPER_SECRET"
-  mode: "paper"                 # 使用模拟盘
+    key: "YOUR_TESTNET_KEY"
+    secret: "YOUR_TESTNET_SECRET"
+  mode: "paper"
 ```
 
-#### 步骤2：构建镜像
+### 2. Docker部署（推荐）
 ```bash
-chmod +x deploy.sh
-./deploy.sh build
-```
+# 构建镜像
+docker-compose build
 
-#### 步骤3：运行回测
-```bash
-./deploy.sh backtest
-```
+# 启动模拟盘
+docker-compose up -d paper_trading
 
-**预期输出：**
-```
-[1/5] 下载历史数据...
-K线数据已存在，跳过下载: /app/data/BTCUSDT_15m.parquet
-数据时间范围: 2020-01-01 ~ 2026-02-07
-数据条数: 214,080 条
-
-[2/5] 构建特征与标签...
-特征矩阵形状: (213979, 41), 标签数量: (213979,)
-
-[3/5] 划分训练集和回测集...
-训练集: 2020-2024年, 共 175,290 条K线
-回测集: 2025-2026年, 共 38,592 条K线（样本外数据）
-
-[4/5] 训练模型（CPU友好LightGBM）...
-Fold 1 accuracy: 73.0%
-Fold 2 accuracy: 83.1%
-Fold 3 accuracy: 90.5%
-Fold 4 accuracy: 94.7%
-Fold 5 accuracy: 89.6%
-模型已保存: /app/models/model_latest.pkl
-
-[5/5] 在回测集上生成信号并运行回测...
-回测结束：最终权益 = XXX, 总收益 = XX%, 最大回撤 = XX%
-```
-
-#### 步骤4：启动模拟盘
-```bash
-./deploy.sh paper
-```
-
-**查看实时日志：**
-```bash
-./deploy.sh logs paper_trading
-```
-
-#### 步骤5：（可选）启动实盘
-⚠️ **警告：实盘交易涉及真实资金，请谨慎操作！**
-
-```bash
-# 修改配置
-vim config.yaml
-# 设置 api.mode: "live"
-# 填写实盘API密钥
-
-# 启动实盘
-./deploy.sh live
-```
-
----
-
-### 方法2：本地Python环境
-
-#### 步骤1：创建虚拟环境
-```bash
-python3 -m venv venv
-source venv/bin/activate  # Linux/Mac
-# 或
-venv\Scripts\activate  # Windows
-```
-
-#### 步骤2：安装依赖
-```bash
-pip install -r requirements.txt
-```
-
-#### 步骤3：配置参数
-编辑 `config.yaml`（同上）
-
-#### 步骤4：运行回测
-```bash
-python run_backtest.py
-```
-
-#### 步骤5：运行实时交易
-```bash
-# 模拟盘
-export MODE=paper
-python run_live.py
-
-# 实盘
-export MODE=live
-python run_live.py
-```
-
----
-
-## 📈 策略优化历程
-
-### 初始版本（1小时K线）
-- **K线周期：** 1小时
-- **特征数：** 11个
-- **杠杆：** 10倍
-- **标签阈值：** ±0.2%
-- **回测结果：** 样本外收益 **-52.17%**（严重过拟合）
-
-### 优化版本1（增强特征）
-- **改进：** 特征扩展到30个，增加正则化
-- **回测结果：** 样本外收益 **-1.21%**（接近盈亏平衡）
-
-### 当前版本（15分钟K线）
-- **K线周期：** 15分钟（交易频率提升4倍）
-- **特征数：** 41个
-- **杠杆：** 40倍
-- **单笔风险：** 5%
-- **标签阈值：** ±0.8%
-- **预测周期：** 4根K线（1小时）
-- **回测结果：** 交易信号过少，模型几乎只预测观望
-
-### 待优化方向
-1. **降低信号阈值**：`min_prob` 从0.50降到0.35
-2. **减小概率差**：`prob_gap` 从0.20降到0.10
-3. **调整标签阈值**：±0.8%改为±0.5%
-4. **类别平衡**：增加 `scale_pos_weight` 参数
-5. **特征选择**：保留最重要的20-30个特征
-6. **动态阈值**：根据市场波动率自适应调整
-
----
-
-## 🔍 常见问题（FAQ）
-
-### Q1：为什么回测交易笔数为0？
-**A：** 模型过于保守，几乎只预测观望信号。需要降低信号阈值（`min_prob`和`prob_gap`）。
-
-### Q2：如何提高胜率？
-**A：** 
-- 增加特征工程（更多技术指标）
-- 增强模型正则化（防止过拟合）
-- 调整标签阈值（捕捉更大机会）
-- 使用更长的训练数据
-
-### Q3：杠杆倍数如何选择？
-**A：** 
-- **新手：** 5-10倍（安全）
-- **有经验：** 20-30倍（平衡）
-- **激进：** 40倍（高风险）
-- 注意：40倍杠杆维持保证金率仅0.5%，极易爆仓
-
-### Q4：数据下载失败怎么办？
-**A：** 
-- 系统支持断点续传，重新运行即可
-- 检查网络连接
-- 增加重试次数（修改 `data.py` 中的 `max_retries`）
-- 更换API endpoint（国内可能需要代理）
-
-### Q5：模型训练需要多长时间？
-**A：** 
-- 15分钟K线（214,080条）：约2-3分钟
-- 5折交叉验证
-- CPU：Intel i5 或以上
-- 内存：建议4GB+
-
-### Q6：如何监控实盘运行状态？
-**A：** 
-```bash
-# 查看实时日志
+# 查看日志
 docker-compose logs -f paper_trading
-
-# 进入容器
-docker exec -it btc_quant_paper bash
-
-# 查看日志文件
-tail -f logs/btc_quant.log
 ```
 
-### Q7：如何备份模型和数据？
-**A：** 
+### 3. 本地运行
 ```bash
-# 备份模型
-cp models/model_latest.pkl models/model_backup_$(date +%Y%m%d).pkl
+# 安装依赖
+pip install -r requirements.txt
 
-# 备份数据
-tar -czf data_backup.tar.gz data/
+# 运行回测
+python train_dynamic_exposure_with_advanced_risk.py
 
-# 备份配置
-cp config.yaml config_backup_$(date +%Y%m%d).yaml
+# 运行实盘
+export MODE=paper
+python run_live_dynamic_exposure.py
 ```
 
-### Q8：模拟盘和实盘有什么区别？
-**A：** 
-| 项目 | 模拟盘 | 实盘 |
-|------|--------|------|
-| API密钥 | 只读或测试网 | 真实密钥 |
-| 下单 | 不真实下单 | 真实下单 |
-| 资金 | 虚拟资金 | 真实资金 |
-| 风险 | 零风险 | 高风险 |
-| 用途 | 测试策略 | 真实交易 |
+---
+
+## 📊 核心特性
+
+### 两阶段预测架构
+1. **阶段1**: 预测盈亏比（筛选高质量机会）
+2. **阶段2**: 预测方向和持有周期
+
+### 动态敞口管理
+- 根据信号质量动态调整（1-10倍）
+- 回撤时自动降低敞口
+- 连续亏损敞口惩罚
+
+### 多层风控体系
+1. 固定止损（-3%）
+2. 追踪止损（盈利>1%启动，价格下降2%触发）
+3. 持仓周期到期
+4. 每日最大亏损限制（-20%）
+5. 回撤暂停（10%）
+6. 动态敞口管理
+
+---
+
+## ⚙️ 项目结构
+
+```
+lightgbm/
+├── btc_quant/                          # 核心量化模块
+│   ├── config.py                       # 配置管理
+│   ├── data.py                         # 数据下载
+│   ├── features.py                     # 特征工程（485维）
+│   ├── risk_reward_labels.py           # 盈亏比标签
+│   ├── risk_reward_model.py            # 两阶段模型
+│   ├── execution.py                    # 交易执行
+│   └── monitor.py                      # 日志监控
+│
+├── models/                             # 训练模型
+│   └── final_6x_fixed_capital/         # 生产模型（2019-2024训练）
+│       ├── risk_reward_model.txt
+│       ├── direction_model.txt
+│       └── period_model.txt
+│
+├── data/                               # 历史K线数据
+├── logs/                               # 运行日志
+├── backtest/                           # 回测结果
+│
+├── config.yaml                         # 主配置文件
+├── docker-compose.yml                  # Docker编排
+├── Dockerfile                          # 镜像构建
+│
+├── train_dynamic_exposure_with_advanced_risk.py  # 主回测脚本（生产）
+├── run_live_dynamic_exposure.py                  # 实盘/模拟盘运行脚本
+├── visualize_final_10x_exposure.py               # 回测可视化报告
+├── README.md                           # 本文件
+└── TECHNICAL_DOCUMENTATION.md          # 完整技术文档
+```
+
+---
+
+## 🔥 最新更新（v3.1 - 2026-02-20）
+
+- ✅ 追踪止损优化：价格距最高点下降2%触发
+- ✅ 数据泄露验证：训练集/回测集完全独立
+
+### 关键性能（v3.0 优化）
+
+- 总收益率：**2,838,309%**（326% → 28384倍）
+- 交易频率：0.39笔/天（1.6笔/月 → 提升7.3倍）
+- 胜率：78.75% | 盈亏比：1.45
 
 ---
 
@@ -1018,98 +187,36 @@ cp config.yaml config_backup_$(date +%Y%m%d).yaml
 
 **请在使用本系统前仔细阅读：**
 
-1. **高风险投资：** 加密货币合约交易风险极高，可能导致本金全部损失
-2. **杠杆风险：** 40倍杠杆意味着价格波动2.5%即可爆仓
-3. **市场风险：** 模型基于历史数据训练，无法预测极端行情（黑天鹅事件）
-4. **策略风险：** 过拟合、参数敏感、信号滞后等问题可能导致亏损
-5. **技术风险：** 网络故障、API限流、系统宕机等可能影响交易执行
-6. **资金管理：** 建议单笔风险不超过总资金的2-5%
-7. **充分测试：** 实盘前务必在模拟盘充分测试至少1-3个月
+1. **高风险投资**：加密货币合约交易风险极高，可能导致本金全部损失
+2. **杠杆风险**：10倍杠杆意味着价格波动10%即可爆仓
+3. **回测不代表未来**：历史数据表现不保证实盘收益
+4. **充分测试**：实盘前务必在模拟盘测试至少1-2周
 
-**免责声明：**
+**免责声明**：
 - 本系统仅供学习和研究使用
-- 作者不对任何交易损失负责
 - 使用本系统进行实盘交易的一切后果由用户自行承担
-- 请遵守当地法律法规
-
----
-
-## 📚 学习资源
-
-### 量化交易基础
-- [Binance API文档](https://binance-docs.github.io/apidocs/futures/cn/)
-- [LightGBM文档](https://lightgbm.readthedocs.io/)
-- [Pandas时间序列分析](https://pandas.pydata.org/docs/user_guide/timeseries.html)
-
-### 技术指标
-- [MACD指标详解](https://www.investopedia.com/terms/m/macd.asp)
-- [RSI指标详解](https://www.investopedia.com/terms/r/rsi.asp)
-- [布林带指标详解](https://www.investopedia.com/terms/b/bollingerbands.asp)
-
-### 机器学习
-- [时间序列交叉验证](https://scikit-learn.org/stable/modules/cross_validation.html#time-series-split)
-- [多分类模型评估](https://scikit-learn.org/stable/modules/model_evaluation.html)
-
----
-
-## 🤝 贡献指南
-
-欢迎贡献代码、报告问题或提出建议！
-
-### 报告问题
-- 在GitHub Issues中描述问题
-- 提供详细的复现步骤
-- 附上日志文件和配置参数
-
-### 代码规范
-- 使用Python 3.10+
-- 遵循PEP 8代码风格
-- 添加必要的注释和文档字符串
-- 提交前运行测试
-
-### 功能建议
-优先考虑的优化方向：
-1. 增加更多技术指标特征
-2. 支持更多交易所（OKX、Bybit等）
-3. 实现多品种轮动策略
-4. 添加Telegram/微信通知
-5. 开发Web管理界面
-6. 增加更多止损策略（时间止损、波动率止损）
-
----
-
-## 📄 许可证
-
-本项目采用 MIT 许可证。
 
 ---
 
 ## 📞 联系方式
 
-- **作者：** lemonshwang
-- **项目路径：** `/Users/lemonshwang/project/rich`
-- **最后更新：** 2026-02-08
+- **项目路径**: `/Users/lemonshwang/project/rich/lightgbm`
+- **作者**: lemonshwang
+- **最后更新**: 2026-02-20
 
 ---
 
-## 🎯 版本历史
+## 📖 详细文档
 
-### v1.0.0（当前版本）
-- ✅ 完整的回测框架
-- ✅ LightGBM三分类模型
-- ✅ 41个技术指标特征
-- ✅ Docker容器化部署
-- ✅ 模拟盘和实盘支持
-- ✅ 动态止损止盈
-- ✅ 风险管理模块
-- ✅ 按天数据存储（断点续传）
+更多详细信息请查看 **[TECHNICAL_DOCUMENTATION.md](TECHNICAL_DOCUMENTATION.md)**
 
-### 计划中（v1.1.0）
-- 🔄 降低信号阈值（解决交易频率过低问题）
-- 🔄 类别平衡优化（scale_pos_weight）
-- 🔄 特征重要性分析
-- 🔄 增加Telegram通知
-- 🔄 Web监控界面
+包含内容：
+- 完整的系统架构设计
+- 核心模块详细说明
+- 风控机制深度解析
+- 潜在风险全面分析
+- 性能优化详细计划
+- 运维指南和故障排查
 
 ---
 

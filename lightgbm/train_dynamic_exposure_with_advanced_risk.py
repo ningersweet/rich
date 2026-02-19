@@ -1,12 +1,32 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-动态敞口管理策略 + 多层风控系统
-1. 固定止损：-3%
-2. 追踪止损：盈利后自动保护利润
-3. 每日最大亏损：-20%
-4. 回撤止损：从峰值回撤>6%暂停交易
-5. 动态敞口：根据回撤自动降低敞口
+【主回测脚本】动态敞口管理策略 + 多层风控系统
+
+用途：
+    生产环境的主要回测验证脚本，用于测试当前策略配置的效果
+
+功能：
+    1. 加载生产模型（models/final_6x_fixed_capital/）
+    2. 在样本外数据（2025-2026）上回测
+    3. 对比基础版 vs 高级版风控效果
+    4. 输出详细的回测指标
+
+风控配置：
+    1. 固定止损：-3%
+    2. 追踪止损：盈利>1%启动，价格下降2%触发
+    3. 每日最大亏损：-20%
+    4. 回撤暂停：从峰值回撤>10%暂停交易，次日自动恢复
+    5. 动态敞口：1-10倍，根据信号质量和回撤自动调整
+
+使用方法：
+    python train_dynamic_exposure_with_advanced_risk.py
+    
+输出：
+    - 终端显示回测结果
+    - 日志文件：train_dynamic_exposure_advanced_risk.log
+
+最后更新：2026-02-20
 """
 
 import os
@@ -75,10 +95,11 @@ def advanced_risk_backtest(klines, predictions, initial_balance=1000.0,
     多层风控回测
     
     新增风控机制：
-    1. 追踪止损：盈利>1%后，最多回吐50%
-    2. 每日最大亏损：单日亏损>20%停止当日交易
-    3. 回撤暂停：从峰值回撤>6%暂停交易
+    1. 追踪止损：盈利>1%后，价格距最高点下降2%触发
+    2. 每日最大亏损：单日亏损>20%停止当日交易，次日自动恢复
+    3. 回撤暂停：从峰值回撤>10%暂停交易，次日自动恢复
     4. 连续亏损敞口降低
+    5. 动态敞口管理：根据信号质量动态调整1-10倍
     """
     equity = initial_balance
     trades = []
@@ -91,11 +112,28 @@ def advanced_risk_backtest(klines, predictions, initial_balance=1000.0,
     current_date = None
     trading_paused = False
     pause_reason = None
+    pause_start_time = None  # 暂停开始时间
     
     for i in range(len(predictions)):
-        # 检查日期变化（重置每日亏损）
+        # 检查日期变化
         current_time = pd.to_datetime(klines.iloc[i]['open_time'])
-        if current_date is None or current_time.date() != current_date:
+        date_changed = (current_date is None or current_time.date() != current_date)
+        
+        # 暂停恢复逻辑：所有暂停都在新的一天自动恢复
+        if trading_paused and date_changed:
+            trading_paused = False
+            prev_reason = pause_reason
+            pause_reason = None
+            pause_start_time = None
+            if prev_reason == 'daily_loss':
+                logger.info(f"[{current_time}] 新的一天，恢复交易（每日亏损暂停已解除）")
+            elif prev_reason == 'drawdown_pause':
+                # 回撤暂停恢复后，重置峰值权益（将回撤归零）
+                peak_equity = equity
+                logger.info(f"[{current_time}] 新的一天，恢复交易（回撤暂停已解除，回撤已重置为0%）")
+        
+        # 更新当前日期（重置每日亏损）
+        if date_changed:
             current_date = current_time.date()
             daily_start_equity = equity
         
@@ -107,20 +145,14 @@ def advanced_risk_backtest(klines, predictions, initial_balance=1000.0,
                 trading_paused = True
                 pause_reason = 'daily_loss'
         
-        # 回撤暂停检查
-        current_drawdown = (peak_equity - equity) / peak_equity if peak_equity > 0 else 0
-        if current_drawdown > max_drawdown_pause:
-            if not trading_paused:
-                logger.warning(f"[{current_time}] 触发回撤暂停: {current_drawdown*100:.2f}%，暂停交易")
+        # 回撤暂停检查（只在非暂停状态下检查）
+        if not trading_paused:
+            current_drawdown = (peak_equity - equity) / peak_equity if peak_equity > 0 else 0
+            if current_drawdown > max_drawdown_pause:
+                logger.warning(f"[{current_time}] 触发回撤暂停: {current_drawdown*100:.2f}%，暂停交易至明日")
                 trading_paused = True
                 pause_reason = 'drawdown_pause'
-        
-        # 新的一天解除暂停
-        if trading_paused and pause_reason == 'daily_loss':
-            if current_time.date() != current_date:
-                trading_paused = False
-                pause_reason = None
-                logger.info(f"[{current_time}] 新的一天，恢复交易")
+                pause_start_time = current_time  # 记录暂停开始时间
         
         # 平仓逻辑
         if position is not None:
@@ -135,23 +167,23 @@ def advanced_risk_backtest(klines, predictions, initial_balance=1000.0,
             # 1. 固定止损
             stop_loss_triggered = (price_change_pct < stop_loss_pct)
             
-            # 2. 追踪止损（盈利后保护）
+            # 2. 追踪止损（价格距最高点下降2%）
             trailing_stop_triggered = False
-            if use_trailing_stop and price_change_pct > 0.01:  # 盈利>1%
+            if use_trailing_stop and price_change_pct > 0.01:  # 盈利>1%启动追踪
                 max_profit_pct = position.get('max_profit_pct', price_change_pct)
                 position['max_profit_pct'] = max(max_profit_pct, price_change_pct)
                 
-                # 最多回吐50%利润
-                profit_retracement = (max_profit_pct - price_change_pct) / max_profit_pct
-                if profit_retracement > 0.5:
+                # 价格距最高点下降2%
+                price_drop_from_peak = max_profit_pct - price_change_pct
+                if price_drop_from_peak > 0.02:
                     trailing_stop_triggered = True
             
             # 3. 持仓周期到期
             holding_period_reached = (bars_held >= position['hold_period'])
             
             if stop_loss_triggered or trailing_stop_triggered or holding_period_reached:
-                # 真复利：使用实时权益计算盈亏
-                pnl = equity * price_change_pct * position['exposure']
+                # 使用动态敞口计算盈亏
+                pnl = equity * position['exposure'] * price_change_pct
                 equity += pnl
                 
                 # 更新风控指标
@@ -217,7 +249,7 @@ def advanced_risk_backtest(klines, predictions, initial_balance=1000.0,
         else:
             price_change_pct = (position['entry_price'] - final_price) / position['entry_price']
         
-        pnl = initial_balance * price_change_pct * position['exposure']
+        pnl = equity * position['exposure'] * price_change_pct
         equity += pnl
         
         trades.append({
@@ -321,7 +353,8 @@ def main():
     X_backtest_top30 = X_backtest_full[top_30_features]
     
     logger.info("生成预测...")
-    predictions_dict = strategy.predict(X_backtest_top30, rr_threshold=2.5, prob_threshold=0.75)
+    # 参数调整：置信度 0.75→0.70（提高交易频率）
+    predictions_dict = strategy.predict(X_backtest_top30, rr_threshold=2.5, prob_threshold=0.70)
     
     predictions = pd.DataFrame({
         'predicted_rr': predictions_dict['predicted_rr'],
@@ -356,15 +389,16 @@ def main():
             predictions=predictions,
             initial_balance=1000.0,
             max_exposure=10.0,
-            stop_loss_pct=-0.03,
+            stop_loss_pct=-0.03,  # 固定止损-3%
             max_daily_loss_pct=-0.20,
-            max_drawdown_pause=0.06,
-            use_trailing_stop=use_trailing
+            max_drawdown_pause=0.10,  # 参数调整：6%→10%（降低回撤暂停敏感度）
+            use_trailing_stop=use_trailing  # 追踪止损：盈利>1%后回吐>50%触发
         )
         
         logger.info(f"\n配置: {desc}")
         logger.info(f"总收益率: {result['total_return']:.2f}%")
         logger.info(f"最终权益: {result['final_equity']:.2f} USDT")
+        logger.info(f"交易数: {result['total_trades']} 笔")
         logger.info(f"胜率: {result['win_rate']:.2f}%")
         logger.info(f"盈亏比: {result['profit_loss_ratio']:.2f}")
         logger.info(f"最大回撤: {result['max_drawdown']:.2f}%")

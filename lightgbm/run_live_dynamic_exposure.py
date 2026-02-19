@@ -159,7 +159,7 @@ def main():
     max_exposure = 10.0  # 最大敞口10倍
     stop_loss_pct = -0.03  # 固定止损-3%
     max_daily_loss_pct = -0.20  # 每日最大亏损-20%
-    max_drawdown_pause = 0.06  # 回撤>6%暂停交易
+    max_drawdown_pause = 0.10  # 回撤>10%暂停交易至明日
     rr_threshold = 2.5  # RR阈值（最佳参数，2026-02-17回测验证）
     prob_threshold = 0.75  # 置信度阈值（最佳参数，2026-02-17回测验证）
     
@@ -252,10 +252,19 @@ def main():
                         try:
                             daily_start_balance = client.get_account_balance_usdt()
                             logger.info("📅 新的一天，重置每日起始余额: %.2f USDT", daily_start_balance)
+                            
+                            # 解除每日亏损暂停
                             if trading_paused and pause_reason == 'daily_loss':
                                 trading_paused = False
                                 pause_reason = None
                                 logger.info("✅ 解除每日亏损暂停")
+                            
+                            # 解除回撤暂停，并重置峰值权益（将回撤归零）
+                            elif trading_paused and pause_reason == 'drawdown_pause':
+                                trading_paused = False
+                                pause_reason = None
+                                peak_equity = daily_start_balance
+                                logger.info("✅ 解除回撤暂停，回撤已重置为0%%")
                         except Exception as e:
                             logger.warning("获取余额失败: %s", e)
             else:
@@ -308,23 +317,17 @@ def main():
                             pause_reason = 'daily_loss'
                             logger.error("🛑 触发每日最大亏损限制 %.2f%%, 暂停交易", daily_loss_pct * 100)
                     
-                    # 回撤检查
-                    if peak_equity is not None:
+                    # 回撤检查（只在非暂停状态检查）
+                    if peak_equity is not None and not trading_paused:
                         current_drawdown = (peak_equity - current_balance) / peak_equity
                         if current_drawdown > max_drawdown_pause:
-                            if not trading_paused:
-                                trading_paused = True
-                                pause_reason = 'drawdown_pause'
-                                logger.error("🛑 触发回撤暂停 %.2f%%, 暂停交易", current_drawdown * 100)
-                        elif current_balance > peak_equity:
-                            peak_equity = current_balance
-                            if trading_paused and pause_reason == 'drawdown_pause':
-                                # 回撤降低，解除暂停
-                                new_drawdown = (peak_equity - current_balance) / peak_equity
-                                if new_drawdown < max_drawdown_pause * 0.8:
-                                    trading_paused = False
-                                    pause_reason = None
-                                    logger.info("✅ 回撤降至%.2f%%, 恢复交易", new_drawdown * 100)
+                            trading_paused = True
+                            pause_reason = 'drawdown_pause'
+                            logger.error("🛑 触发回撤暂停 %.2f%%, 暂停交易至明日", current_drawdown * 100)
+                    
+                    # 更新峰值权益
+                    if peak_equity is None or current_balance > peak_equity:
+                        peak_equity = current_balance
                 except Exception as e:
                     logger.warning("风控检查失败: %s", e)
             
@@ -349,8 +352,8 @@ def main():
                         should_close = True
                         close_reason = f"止损({price_change_pct*100:.2f}% < {stop_loss_pct*100:.1f}%)"
                     
-                    # 2. 追踪止损（盈利>1%后，回吐>50%利润）
-                    elif price_change_pct > 0.01:  # 盈利>1%
+                    # 2. 追踪止损（价格距最高点下降2%）
+                    elif price_change_pct > 0.01:  # 盈利>1%启动追踪
                         # 更新最高盈利点
                         if price_change_pct > max_profit_pct:
                             max_profit_pct = price_change_pct
@@ -368,11 +371,11 @@ def main():
                                 'timestamp': str(pd.Timestamp.now(tz='UTC'))
                             }, logger)
                         
-                        # 检查利润回吐
-                        profit_retracement = (max_profit_pct - price_change_pct) / max_profit_pct
-                        if profit_retracement > 0.5:  # 回吐>50%
+                        # 价格距最高点下降2%
+                        price_drop_from_peak = max_profit_pct - price_change_pct
+                        if price_drop_from_peak > 0.02:
                             should_close = True
-                            close_reason = f"追踪止损(盈利回吐{profit_retracement*100:.1f}%, 从{max_profit_pct*100:.2f}%降至{price_change_pct*100:.2f}%)"
+                            close_reason = f"追踪止损(价格从{max_profit_pct*100:.2f}%回落至{price_change_pct*100:.2f}%, 下跌{price_drop_from_peak*100:.2f}%)"
                     
                     # 3. 持仓周期检查（只在新K线时检查）
                     if not should_close and is_new_bar and bars_held >= predicted_holding_period:
