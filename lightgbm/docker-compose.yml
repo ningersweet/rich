@@ -12,6 +12,7 @@ services:
       - ./models:/app/models
       - ./backtest:/app/backtest
       - ./logs:/app/logs
+      - ./state:/app/state
     environment:
       - MODE=backtest
     restart: "no"
@@ -29,6 +30,7 @@ services:
       - ./models:/app/models:ro
       - ./data:/app/data
       - ./logs:/app/logs
+      - ./state:/app/state
     environment:
       - MODE=paper
     restart: unless-stopped
@@ -51,6 +53,7 @@ services:
       - ./models:/app/models:ro
       - ./data:/app/data
       - ./logs:/app/logs
+      - ./state:/app/state
     environment:
       - MODE=live
     restart: unless-stopped
