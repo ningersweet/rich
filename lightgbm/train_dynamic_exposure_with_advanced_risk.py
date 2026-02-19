@@ -150,7 +150,8 @@ def advanced_risk_backtest(klines, predictions, initial_balance=1000.0,
             holding_period_reached = (bars_held >= position['hold_period'])
             
             if stop_loss_triggered or trailing_stop_triggered or holding_period_reached:
-                pnl = initial_balance * price_change_pct * position['exposure']
+                # 真复利：使用实时权益计算盈亏
+                pnl = equity * price_change_pct * position['exposure']
                 equity += pnl
                 
                 # 更新风控指标

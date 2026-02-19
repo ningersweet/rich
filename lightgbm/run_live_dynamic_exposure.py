@@ -6,6 +6,7 @@
 """
 
 import time
+import json
 import pandas as pd
 import numpy as np
 import requests
@@ -17,6 +18,34 @@ from btc_quant.execution import BinanceFuturesClient
 from btc_quant.features import build_features_and_labels
 from btc_quant.monitor import setup_logger
 from btc_quant.risk_reward_model import TwoStageRiskRewardStrategy
+
+
+# 状态文件路径（挂载到 Docker 容器外）
+STATE_FILE = Path('/app/state/trading_state.json')
+
+
+def save_trading_state(state_dict, logger):
+    """保存交易状态到文件"""
+    try:
+        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(STATE_FILE, 'w') as f:
+            json.dump(state_dict, f, indent=2)
+        logger.debug("💾 状态已保存")
+    except Exception as e:
+        logger.warning("状态保存失败: %s", e)
+
+
+def load_trading_state(logger):
+    """从文件加载交易状态"""
+    try:
+        if STATE_FILE.exists():
+            with open(STATE_FILE, 'r') as f:
+                state = json.load(f)
+            logger.info("📂 已加载交易状态: %s", state)
+            return state
+    except Exception as e:
+        logger.warning("状态加载失败: %s", e)
+    return None
 
 
 def fetch_latest_klines(symbol: str, interval: str, limit: int, base_url: str) -> pd.DataFrame:
@@ -154,6 +183,7 @@ def main():
     open_exposure = 0.0  # 当前持仓敞口
     open_entry_idx = 0  # 开仓时的索引（用于计算持仓时间）
     predicted_holding_period = 0  # 预测的持仓周期
+    max_profit_pct = 0.0  # 追踪止损：记录最高盈利百分比
     
     # 风控状态
     starting_balance = None
@@ -184,6 +214,16 @@ def main():
                     open_position_side = "short"
                     open_position_qty = abs(pos_amt)
                     logger.info("🔄 同步持仓: 做空 %.4f", abs(pos_amt))
+                
+                # 尝试恢复持仓状态
+                saved_state = load_trading_state(logger)
+                if saved_state and saved_state.get('open_position_side') == open_position_side:
+                    open_entry_idx = saved_state.get('open_entry_idx', 0)
+                    predicted_holding_period = saved_state.get('predicted_holding_period', 0)
+                    max_profit_pct = saved_state.get('max_profit_pct', 0.0)
+                    open_exposure = saved_state.get('open_exposure', 0.0)
+                    logger.info("✅ 已恢复持仓状态: entry_idx=%d, period=%d, max_profit=%.2f%%, exposure=%.2f",
+                               open_entry_idx, predicted_holding_period, max_profit_pct*100, open_exposure)
         except Exception as e:
             logger.exception("获取账户信息失败: %s", e)
             return
@@ -304,12 +344,38 @@ def main():
                     should_close = False
                     close_reason = ""
                     
+                    # 1. 固定止损 -3%
                     if price_change_pct < stop_loss_pct:
                         should_close = True
                         close_reason = f"止损({price_change_pct*100:.2f}% < {stop_loss_pct*100:.1f}%)"
                     
-                    # 持仓周期检查（只在新K线时检查）
-                    elif is_new_bar and bars_held >= predicted_holding_period:
+                    # 2. 追踪止损（盈利>1%后，回吐>50%利润）
+                    elif price_change_pct > 0.01:  # 盈利>1%
+                        # 更新最高盈利点
+                        if price_change_pct > max_profit_pct:
+                            max_profit_pct = price_change_pct
+                            logger.info("📈 更新最高盈利: %.2f%%", max_profit_pct * 100)
+                            
+                            # 更新状态文件
+                            save_trading_state({
+                                'open_position_side': open_position_side,
+                                'open_entry_idx': open_entry_idx,
+                                'predicted_holding_period': predicted_holding_period,
+                                'max_profit_pct': max_profit_pct,
+                                'open_exposure': open_exposure,
+                                'open_entry_price': open_entry_price,
+                                'open_position_qty': open_position_qty,
+                                'timestamp': str(pd.Timestamp.now(tz='UTC'))
+                            }, logger)
+                        
+                        # 检查利润回吐
+                        profit_retracement = (max_profit_pct - price_change_pct) / max_profit_pct
+                        if profit_retracement > 0.5:  # 回吐>50%
+                            should_close = True
+                            close_reason = f"追踪止损(盈利回吐{profit_retracement*100:.1f}%, 从{max_profit_pct*100:.2f}%降至{price_change_pct*100:.2f}%)"
+                    
+                    # 3. 持仓周期检查（只在新K线时检查）
+                    if not should_close and is_new_bar and bars_held >= predicted_holding_period:
                         should_close = True
                         close_reason = f"持仓周期({bars_held}/{predicted_holding_period})K线"
                     
@@ -341,6 +407,15 @@ def main():
                             open_exposure = 0.0
                             open_entry_idx = 0
                             predicted_holding_period = 0
+                            max_profit_pct = 0.0  # 重置追踪止损
+                            
+                            # 删除状态文件
+                            try:
+                                if STATE_FILE.exists():
+                                    STATE_FILE.unlink()
+                                    logger.debug("🗑️  状态文件已删除")
+                            except Exception as e:
+                                logger.warning("删除状态文件失败: %s", e)
                         else:
                             logger.error("❌ 平仓失败: %s", order_res.raw)
                 
@@ -391,6 +466,19 @@ def main():
                             open_exposure = optimal_exposure
                             open_entry_idx = len(klines) - 1  # 记录开仓时的索引
                             predicted_holding_period = int(holding_period)  # 记录预测周期
+                            max_profit_pct = 0.0  # 初始化追踪止损
+                            
+                            # 保存状态
+                            save_trading_state({
+                                'open_position_side': open_position_side,
+                                'open_entry_idx': open_entry_idx,
+                                'predicted_holding_period': predicted_holding_period,
+                                'max_profit_pct': max_profit_pct,
+                                'open_exposure': open_exposure,
+                                'open_entry_price': open_entry_price,
+                                'open_position_qty': open_position_qty,
+                                'timestamp': str(pd.Timestamp.now(tz='UTC'))
+                            }, logger)
                         else:
                             logger.error("❌ 开仓失败: %s", order_res.raw)
                 
