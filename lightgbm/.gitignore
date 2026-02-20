@@ -111,5 +111,6 @@ OPTIMIZATION_SUMMARY.md
 
 config.yaml
 deepseek_config.yaml
+email_config.yaml
 DEPLOY.md
 deploy_to_server.sh

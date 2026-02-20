@@ -18,6 +18,7 @@ from btc_quant.execution import BinanceFuturesClient
 from btc_quant.features import build_features_and_labels
 from btc_quant.monitor import setup_logger
 from btc_quant.risk_reward_model import TwoStageRiskRewardStrategy
+from btc_quant.email_notifier import EmailNotifier
 
 
 # 状态文件路径（挂载到 Docker 容器外）
@@ -171,6 +172,24 @@ def main():
     logger.info("  RR阈值: %.2f", rr_threshold)
     logger.info("  置信度阈值: %.2f", prob_threshold)
     
+    # 初始化邮件通知器
+    email_notifier = None
+    try:
+        email_cfg = cfg.get('email', {})
+        if email_cfg.get('enabled', False):
+            email_notifier = EmailNotifier(
+                smtp_host=email_cfg['smtp_host'],
+                smtp_port=email_cfg['smtp_port'],
+                sender_email=email_cfg['sender_email'],
+                sender_password=email_cfg['sender_password'],
+                receiver_email=email_cfg['receiver_email'],
+                enabled=True
+            )
+        else:
+            logger.info("✉️  邮件通知未启用")
+    except Exception as e:
+        logger.warning("邮件通知初始化失败: %s", e)
+    
     poll_interval = int(cfg.live.get("poll_interval_seconds", 60))
     max_new_bars = int(cfg.live.get("max_new_bars", 500))
     
@@ -318,6 +337,17 @@ def main():
                             trading_paused = True
                             pause_reason = 'daily_loss'
                             logger.error("🛑 触发每日最大亏损限制 %.2f%%, 暂停交易", daily_loss_pct * 100)
+                            
+                            # 发送风控警告邮件
+                            if email_notifier:
+                                try:
+                                    email_notifier.notify_risk_alert(
+                                        alert_type="每日亏损限制",
+                                        message=f"每日亏损达到 {daily_loss_pct * 100:.2f}%，已暂停交易",
+                                        balance=current_balance
+                                    )
+                                except Exception as e:
+                                    logger.warning("风控邮件通知失败: %s", e)
                     
                     # 回撤检查（只在非暂停状态检查）
                     if peak_equity is not None and not trading_paused:
@@ -326,6 +356,18 @@ def main():
                             trading_paused = True
                             pause_reason = 'drawdown_pause'
                             logger.error("🛑 触发回撤暂停 %.2f%%, 暂停交易至明日", current_drawdown * 100)
+                            
+                            # 发送风控警告邮件
+                            if email_notifier:
+                                try:
+                                    email_notifier.notify_risk_alert(
+                                        alert_type="回撤暂停",
+                                        message=f"回撤达到 {current_drawdown * 100:.2f}%，已暂停交易至明日",
+                                        current_drawdown=current_drawdown * 100,
+                                        balance=current_balance
+                                    )
+                                except Exception as e:
+                                    logger.warning("风控邮件通知失败: %s", e)
                     
                     # 更新峰值权益
                     if peak_equity is None or current_balance > peak_equity:
@@ -403,6 +445,25 @@ def main():
                         if order_res.success:
                             logger.info("✅ 平仓成功: %s", order_res.raw)
                             
+                            # 计算盈亏
+                            pnl = current_balance * open_exposure * price_change_pct
+                            
+                            # 发送平仓邮件通知
+                            if email_notifier:
+                                try:
+                                    email_notifier.notify_close_position(
+                                        side=open_position_side,
+                                        quantity=open_position_qty,
+                                        entry_price=open_entry_price,
+                                        exit_price=current_price,
+                                        pnl=pnl,
+                                        pnl_pct=price_change_pct * 100,
+                                        reason=close_reason,
+                                        balance=current_balance
+                                    )
+                                except Exception as e:
+                                    logger.warning("平仓邮件通知失败: %s", e)
+                            
                             # 更新统计
                             if price_change_pct > 0:
                                 consecutive_losses = 0
@@ -475,6 +536,21 @@ def main():
                             open_entry_time = current_close_time  # 记录开仓时的K线时间
                             predicted_holding_period = int(holding_period)  # 记录预测周期
                             max_profit_pct = 0.0  # 初始化追踪止损
+                            
+                            # 发送开仓邮件通知
+                            if email_notifier:
+                                try:
+                                    email_notifier.notify_open_position(
+                                        side=desired_side,
+                                        quantity=quantity,
+                                        price=current_price,
+                                        exposure=optimal_exposure,
+                                        rr=predicted_rr,
+                                        prob=direction_prob,
+                                        balance=current_balance
+                                    )
+                                except Exception as e:
+                                    logger.warning("开仓邮件通知失败: %s", e)
                             
                             # 保存状态
                             save_trading_state({

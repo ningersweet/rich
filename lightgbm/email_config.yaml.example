@@ -1,0 +1,25 @@
+# 邮件通知配置
+email:
+  enabled: false  # 是否启用邮件通知
+  
+  # SMTP服务器配置
+  smtp_host: "smtp.gmail.com"  # Gmail: smtp.gmail.com, QQ: smtp.qq.com, 163: smtp.163.com
+  smtp_port: 587  # 通常使用 587 (TLS) 或 465 (SSL)
+  
+  # 发件人信息
+  sender_email: "your_email@gmail.com"  # 发件人邮箱
+  sender_password: "your_app_password"  # 邮箱密码或授权码
+  
+  # 收件人信息
+  receiver_email: "your_email@gmail.com"  # 收件人邮箱（可以和发件人相同）
+
+# 通知配置
+notifications:
+  # 开仓通知
+  notify_on_open: true
+  
+  # 平仓通知
+  notify_on_close: true
+  
+  # 风控警告通知
+  notify_on_risk_alert: true
