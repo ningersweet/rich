@@ -59,14 +59,25 @@ class EmailNotifier:
             # 添加正文
             msg.attach(MIMEText(body, 'plain', 'utf-8'))
             
-            # 连接SMTP服务器
-            with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
+            # 连接SMTP服务器（添加超时）
+            self.logger.debug(f"正在连接SMTP服务器 {self.smtp_host}:{self.smtp_port}")
+            with smtplib.SMTP(self.smtp_host, self.smtp_port, timeout=30) as server:
+                self.logger.debug("启动TLS加密")
                 server.starttls()  # 启用TLS加密
+                
+                self.logger.debug("验证登录")
                 server.login(self.sender_email, self.sender_password)
+                
+                self.logger.debug("发送邮件")
                 server.send_message(msg)
             
             self.logger.info(f"📧 邮件发送成功: {subject}")
             
+        except smtplib.SMTPAuthenticationError as e:
+            self.logger.error(f"❌ 邮件认证失败: {e}")
+            self.logger.error("请检查邮箱密码/授权码是否正确")
+        except smtplib.SMTPException as e:
+            self.logger.error(f"❌ SMTP错误: {e}")
         except Exception as e:
             self.logger.error(f"❌ 邮件发送失败: {e}")
     
