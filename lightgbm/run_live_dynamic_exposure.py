@@ -175,7 +175,7 @@ def main():
     # 初始化邮件通知器
     email_notifier = None
     try:
-        email_cfg = cfg.get('email', {})
+        email_cfg = cfg.raw.get('email', {})
         if email_cfg.get('enabled', False):
             email_notifier = EmailNotifier(
                 smtp_host=email_cfg['smtp_host'],
