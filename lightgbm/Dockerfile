@@ -5,8 +5,6 @@ WORKDIR /app
 
 ENV PYTHONUNBUFFERED=1     PYTHONDONTWRITEBYTECODE=1     TZ=UTC
 
-RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources || true
-
 RUN apt-get update &&     apt-get install -y --no-install-recommends     gcc     g++     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
