@@ -181,7 +181,7 @@ def main():
     open_position_qty = 0.0
     open_entry_price = 0.0
     open_exposure = 0.0  # 当前持仓敞口
-    open_entry_idx = 0  # 开仓时的索引（用于计算持仓时间）
+    open_entry_time = None  # 开仓时的K线时间戳（用于计算持仓时间）
     predicted_holding_period = 0  # 预测的持仓周期
     max_profit_pct = 0.0  # 追踪止损：记录最高盈利百分比
     
@@ -218,12 +218,14 @@ def main():
                 # 尝试恢复持仓状态
                 saved_state = load_trading_state(logger)
                 if saved_state and saved_state.get('open_position_side') == open_position_side:
-                    open_entry_idx = saved_state.get('open_entry_idx', 0)
+                    open_entry_time = saved_state.get('open_entry_time')
+                    if open_entry_time:
+                        open_entry_time = pd.to_datetime(open_entry_time)
                     predicted_holding_period = saved_state.get('predicted_holding_period', 0)
                     max_profit_pct = saved_state.get('max_profit_pct', 0.0)
                     open_exposure = saved_state.get('open_exposure', 0.0)
-                    logger.info("✅ 已恢复持仓状态: entry_idx=%d, period=%d, max_profit=%.2f%%, exposure=%.2f",
-                               open_entry_idx, predicted_holding_period, max_profit_pct*100, open_exposure)
+                    logger.info("✅ 已恢复持仓状态: entry_time=%s, period=%d, max_profit=%.2f%%, exposure=%.2f",
+                               open_entry_time, predicted_holding_period, max_profit_pct*100, open_exposure)
         except Exception as e:
             logger.exception("获取账户信息失败: %s", e)
             return
@@ -334,8 +336,11 @@ def main():
             # 平仓逻辑：持仓周期 + 止损检查
             if enable_trading and open_position_side != "flat":
                 try:
-                    current_idx = len(klines) - 1
-                    bars_held = current_idx - open_entry_idx
+                    # 计算持仓K线数（基于时间）
+                    bars_held = 0
+                    if open_entry_time is not None:
+                        time_diff = (current_close_time - open_entry_time).total_seconds()
+                        bars_held = int(time_diff / (15 * 60))  # 15分钟K线
                     
                     # 计算当前盈亏
                     if open_position_side == "long":
@@ -362,7 +367,7 @@ def main():
                             # 更新状态文件
                             save_trading_state({
                                 'open_position_side': open_position_side,
-                                'open_entry_idx': open_entry_idx,
+                                'open_entry_time': str(open_entry_time),
                                 'predicted_holding_period': predicted_holding_period,
                                 'max_profit_pct': max_profit_pct,
                                 'open_exposure': open_exposure,
@@ -408,7 +413,7 @@ def main():
                             open_position_qty = 0.0
                             open_entry_price = 0.0
                             open_exposure = 0.0
-                            open_entry_idx = 0
+                            open_entry_time = None
                             predicted_holding_period = 0
                             max_profit_pct = 0.0  # 重置追踪止损
                             
@@ -467,14 +472,14 @@ def main():
                             open_position_qty = quantity
                             open_entry_price = current_price
                             open_exposure = optimal_exposure
-                            open_entry_idx = len(klines) - 1  # 记录开仓时的索引
+                            open_entry_time = current_close_time  # 记录开仓时的K线时间
                             predicted_holding_period = int(holding_period)  # 记录预测周期
                             max_profit_pct = 0.0  # 初始化追踪止损
                             
                             # 保存状态
                             save_trading_state({
                                 'open_position_side': open_position_side,
-                                'open_entry_idx': open_entry_idx,
+                                'open_entry_time': str(open_entry_time),
                                 'predicted_holding_period': predicted_holding_period,
                                 'max_profit_pct': max_profit_pct,
                                 'open_exposure': open_exposure,
