@@ -54,6 +54,7 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 import logging
+from sklearn.model_selection import TimeSeriesSplit
 
 from btc_quant.config import load_config
 from btc_quant.data import load_klines
@@ -92,7 +93,7 @@ MODEL_DIR = Path('models/final_2024_dynamic')
 
 # 标签构建参数
 TARGET_RETURN = 0.01          # 目标收益率：1%
-MAX_HOLDING_PERIOD = 50       # 最大持仓周期：50根K线（小时）
+MAX_HOLDING_PERIOD = 50       # 最大持仓周期：50根K线（12.5小时，15分钟周期）
 MIN_RR_RATIO = 1.5            # 最小盈亏比：1.5
 
 # 训练参数
@@ -168,18 +169,31 @@ def main():
     logger.info(f"对齐后样本: {len(X_train_all)} 个")
     
     # ------------------------------------------------------------------------
-    # 步骤4：划分训练集和验证集
+    # 步骤4：划分训练集和验证集（使用时间序列交叉验证）
     # ------------------------------------------------------------------------
     logger.info("\n[4/6] 划分训练集和验证集...")
-    split_idx = int(len(X_train_all) * TRAIN_VAL_SPLIT)
     
-    X_train = X_train_all.iloc[:split_idx]
-    X_val = X_train_all.iloc[split_idx:]
-    labels_train = labels_train_all.iloc[:split_idx]
-    labels_val = labels_train_all.iloc[split_idx:]
+    # 使用时间序列交叉验证，取最后一个fold作为验证集
+    tscv = TimeSeriesSplit(n_splits=5)
+    train_indices = []
+    val_indices = []
     
-    logger.info(f"训练集: {len(X_train)} 个样本 ({TRAIN_VAL_SPLIT*100:.0f}%)")
-    logger.info(f"验证集: {len(X_val)} 个样本 ({(1-TRAIN_VAL_SPLIT)*100:.0f}%)")
+    for train_idx, val_idx in tscv.split(X_train_all):
+        train_indices = train_idx
+        val_indices = val_idx
+    
+    # 使用最后一个fold作为验证集
+    X_train = X_train_all.iloc[train_indices]
+    X_val = X_train_all.iloc[val_indices]
+    labels_train = labels_train_all.iloc[train_indices]
+    labels_val = labels_train_all.iloc[val_indices]
+    
+    train_pct = len(X_train) / len(X_train_all) * 100
+    val_pct = len(X_val) / len(X_train_all) * 100
+    
+    logger.info(f"训练集: {len(X_train)} 个样本 ({train_pct:.1f}%)")
+    logger.info(f"验证集: {len(X_val)} 个样本 ({val_pct:.1f}%)")
+    logger.info(f"验证集时间范围: {klines_train.iloc[val_indices]['close_time'].min()} 至 {klines_train.iloc[val_indices]['close_time'].max()}")
     
     # ------------------------------------------------------------------------
     # 步骤5：两阶段训练
@@ -206,6 +220,15 @@ def main():
     # 从盈亏比模型获取特征重要性
     rr_importance = strategy_full.rr_model.model.feature_importance(importance_type='gain')
     feature_names = strategy_full.rr_model.model.feature_name()
+    
+    # 检查特征名称和重要性数组长度是否一致
+    if len(feature_names) != len(rr_importance):
+        logger.warning(f"特征名称数量({len(feature_names)})与重要性数组长度({len(rr_importance)})不一致！")
+        # 取最小长度以确保匹配
+        min_len = min(len(feature_names), len(rr_importance))
+        feature_names = feature_names[:min_len]
+        rr_importance = rr_importance[:min_len]
+        logger.warning(f"已截断至{min_len}个特征")
     
     importance_dict = dict(zip(feature_names, rr_importance))
     sorted_features = sorted(
@@ -308,9 +331,9 @@ def main():
     logger.info("✅ 训练完成！")
     logger.info("="*80)
     logger.info(f"\n📁 模型保存位置: {MODEL_DIR.absolute()}")
-    logger.info(f"\n🚀 下一步：运行回测脚本")
+    logger.info("\n🚀 下一步：运行回测脚本")
     logger.info(f"   cd /Users/lemonshwang/project/rich/lightgbm")
-    logger.info(f"   python backtest_scripts/backtest_2024_model.py")
+    logger.info(f"   python backtest_scripts/backtest_2024_model.py  # 或 python backtest_scripts/backtest_engine.py")
     logger.info("="*80)
 
 

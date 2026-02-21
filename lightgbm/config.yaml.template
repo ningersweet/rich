@@ -98,6 +98,14 @@ enhanced:
   use_volatility_sizing: true
   max_position_multiplier: 2.0
   min_position_multiplier: 0.5
+  # 金字塔加仓配置 (优化后)
+  enable_pyramid: true
+  pyramid_profit_threshold: 0.02      # 原0.01，提高加仓质量要求
+  pyramid_min_rr: 3.5                 # 原3.0，提高信号质量
+  pyramid_min_prob: 0.8               # 原0.75，提高置信度
+  pyramid_max_count: 4                # 原3，增加加仓潜力
+  pyramid_min_bars: 7                 # 原5，减少过度交易
+  max_total_exposure: 15.0            # 保持不变
 logging:
   level: INFO
   format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'

@@ -19,6 +19,12 @@ from btc_quant.features import build_features_and_labels
 from btc_quant.monitor import setup_logger
 from btc_quant.risk_reward_model import TwoStageRiskRewardStrategy
 from btc_quant.email_notifier import EmailNotifier
+from btc_quant.trading import (
+    Position, TradingState, calculate_dynamic_exposure,
+    should_open_position, should_close_position, calculate_pnl,
+    update_trading_state, reset_daily_state,
+    position_from_dict, position_to_dict
+)
 
 
 # 状态文件路径（挂载到 Docker 容器外）
@@ -43,6 +49,39 @@ def load_trading_state(logger):
             with open(STATE_FILE, 'r') as f:
                 state = json.load(f)
             logger.info("📂 已加载交易状态: %s", state)
+            
+            # 版本兼容性处理
+            version = state.get('version', 1)
+            if version == 1:
+                # 旧版本：单个仓位，转换为positions列表
+                if state.get('open_position_side', 'flat') != 'flat':
+                    # 创建单个仓位对象
+                    pos = Position(
+                        side=state['open_position_side'],
+                        entry_price=state.get('open_entry_price', 0.0),
+                        entry_time=pd.Timestamp(state.get('open_entry_time')).to_pydatetime() if state.get('open_entry_time') else None,
+                        exposure=state.get('open_exposure', 0.0),
+                        hold_period=state.get('predicted_holding_period', 0),
+                        quantity=state.get('open_position_qty', 0.0),
+                        peak_pnl_pct=state.get('max_profit_pct', 0.0),
+                        peak_price=0.0
+                    )
+                    positions = [pos]
+                    last_pyramid_time = None
+                else:
+                    positions = []
+                    last_pyramid_time = None
+                # 更新state字典以包含新字段
+                state['version'] = 2
+                state['positions'] = [position_to_dict(p) for p in positions]
+                state['last_pyramid_time'] = None
+            else:
+                # 版本2：直接使用positions字段
+                positions = [position_from_dict(d) for d in state.get('positions', [])]
+                last_pyramid_time = pd.Timestamp(state['last_pyramid_time']).to_pydatetime() if state.get('last_pyramid_time') else None
+                state['positions'] = [position_to_dict(p) for p in positions]  # 确保序列化格式一致
+                state['last_pyramid_time'] = str(last_pyramid_time) if last_pyramid_time else None
+            
             return state
     except Exception as e:
         logger.warning("状态加载失败: %s", e)
@@ -74,46 +113,7 @@ def fetch_latest_klines(symbol: str, interval: str, limit: int, base_url: str) -
     return df
 
 
-def calculate_dynamic_exposure(predicted_rr, direction_prob, current_drawdown=0, 
-                               consecutive_losses=0, max_exposure=10.0):
-    """
-    根据信号质量动态计算最优敞口
-    
-    参数:
-        predicted_rr: 预测盈亏比
-        direction_prob: 方向置信度
-        current_drawdown: 当前回撤百分比
-        consecutive_losses: 连续亏损次数
-        max_exposure: 最大敞口限制
-    
-    返回:
-        exposure: 建议敞口（杠杆×仓位），范围 [1.0, max_exposure]
-    """
-    
-    # 基础敞口：基于盈亏比和置信度
-    rr_factor = min(predicted_rr / 2.5, 2.0)
-    prob_factor = max((direction_prob - 0.5) / 0.5, 0)
-    base_exposure = 2.0 + rr_factor * 3.0 + prob_factor * 3.0
-    
-    # 回撤惩罚
-    if current_drawdown > 0.02:
-        drawdown_penalty = 1.0 - (current_drawdown - 0.02) * 15
-        drawdown_penalty = max(0.3, drawdown_penalty)
-    else:
-        drawdown_penalty = 1.0
-    
-    # 连续亏损惩罚
-    if consecutive_losses >= 2:
-        loss_penalty = 1.0 - min(consecutive_losses - 1, 5) * 0.15
-        loss_penalty = max(0.2, loss_penalty)
-    else:
-        loss_penalty = 1.0
-    
-    # 最终敞口
-    final_exposure = base_exposure * drawdown_penalty * loss_penalty
-    final_exposure = np.clip(final_exposure, 1.0, max_exposure)
-    
-    return final_exposure
+
 
 
 def main():
@@ -137,7 +137,7 @@ def main():
     base_url = client.base_url
     
     # 加载盈亏比两阶段模型
-    model_dir = Path('models/final_6x_fixed_capital')
+    model_dir = Path('models/final_2024_dynamic')
     if not model_dir.exists():
         logger.error("模型目录不存在: %s", model_dir)
         return
@@ -164,6 +164,16 @@ def main():
     rr_threshold = 2.5  # RR阈值（最佳参数，2026-02-17回测验证）
     prob_threshold = 0.75  # 置信度阈值（最佳参数，2026-02-17回测验证）
     
+    # 金字塔加仓参数（从配置文件读取）
+    enhanced_cfg = cfg.raw.get('enhanced', {})
+    pyramid_enabled = enhanced_cfg.get('enable_pyramid', True)  # 启用金字塔加仓
+    pyramid_profit_threshold = enhanced_cfg.get('pyramid_profit_threshold', 0.01)  # 盈利>1%后允许加仓
+    pyramid_min_rr = enhanced_cfg.get('pyramid_min_rr', 3.0)  # 加仓信号盈亏比阈值
+    pyramid_min_prob = enhanced_cfg.get('pyramid_min_prob', 0.75)  # 加仓信号概率阈值
+    pyramid_max_count = enhanced_cfg.get('pyramid_max_count', 3)  # 最多加仓次数
+    pyramid_min_bars = enhanced_cfg.get('pyramid_min_bars', 5)  # 距上次加仓最小K线数
+    max_total_exposure = enhanced_cfg.get('max_total_exposure', 15.0)  # 总敞口上限（含加仓）
+    
     logger.info("📊 策略参数：")
     logger.info("  最大敞口: %.1f倍", max_exposure)
     logger.info("  固定止损: %.1f%%", stop_loss_pct * 100)
@@ -171,6 +181,11 @@ def main():
     logger.info("  回撤暂停阈值: %.1f%%", max_drawdown_pause * 100)
     logger.info("  RR阈值: %.2f", rr_threshold)
     logger.info("  置信度阈值: %.2f", prob_threshold)
+    logger.info("  金字塔加仓: %s", "启用" if pyramid_enabled else "禁用")
+    if pyramid_enabled:
+        logger.info("    加仓条件: 盈利>%.1f%%, RR≥%.1f, 概率≥%.2f", pyramid_profit_threshold * 100, pyramid_min_rr, pyramid_min_prob)
+        logger.info("    最多加仓次数: %d, 最小K线间隔: %d", pyramid_max_count, pyramid_min_bars)
+        logger.info("    总敞口上限: %.1f倍", max_total_exposure)
     
     # 初始化邮件通知器
     email_notifier = None
@@ -195,14 +210,59 @@ def main():
     
     last_close_time = None
     
-    # 持仓状态
-    open_position_side = "flat"  # flat / long / short
-    open_position_qty = 0.0
-    open_entry_price = 0.0
-    open_exposure = 0.0  # 当前持仓敞口
-    open_entry_time = None  # 开仓时的K线时间戳（用于计算持仓时间）
-    predicted_holding_period = 0  # 预测的持仓周期
-    max_profit_pct = 0.0  # 追踪止损：记录最高盈利百分比
+    # 持仓状态（支持金字塔加仓）
+    positions = []  # Position对象列表，支持多个仓位
+    last_pyramid_time = None  # 上次加仓时间
+    open_position_side = "flat"  # flat / long / short（根据positions推导）
+    open_position_qty = 0.0  # 总数量（根据positions计算）
+    open_entry_price = 0.0  # 平均入场价（根据positions计算）
+    open_exposure = 0.0  # 总敞口（根据positions计算）
+    open_entry_time = None  # 首仓开仓时间（根据positions推导）
+    predicted_holding_period = 0  # 预测的持仓周期（首仓周期）
+    max_profit_pct = 0.0  # 追踪止损：记录最高盈利百分比（所有仓位中最高）
+    
+    def update_derived_position_vars():
+        """根据positions列表更新所有派生变量"""
+        nonlocal open_position_side, open_position_qty, open_entry_price, open_exposure
+        nonlocal open_entry_time, predicted_holding_period, max_profit_pct, position
+        
+        if not positions:
+            open_position_side = "flat"
+            open_position_qty = 0.0
+            open_entry_price = 0.0
+            open_exposure = 0.0
+            open_entry_time = None
+            predicted_holding_period = 0
+            max_profit_pct = 0.0
+            position = None
+            return
+        
+        # 首仓信息
+        first_pos = positions[0]
+        open_position_side = first_pos.side
+        open_entry_time = first_pos.entry_time
+        predicted_holding_period = first_pos.hold_period
+        
+        # 计算总量、总敞口、加权平均入场价
+        total_qty = sum(p.quantity for p in positions)
+        total_exposure = sum(p.exposure for p in positions)
+        if total_qty > 0:
+            avg_entry_price = sum(p.entry_price * p.quantity for p in positions) / total_qty
+        else:
+            avg_entry_price = first_pos.entry_price
+        
+        open_position_qty = total_qty
+        open_exposure = total_exposure
+        open_entry_price = avg_entry_price
+        
+        # 计算所有仓位中的最高盈利百分比
+        max_profit_pct = max((p.peak_pnl_pct for p in positions), default=0.0)
+        
+        # 兼容性变量：position指向首仓（用于共享模块）
+        position = first_pos
+    
+    # 统一持仓对象（使用共享模块，兼容性变量）
+    position = None  # Position对象（兼容性，从positions[0]派生）
     
     # 风控状态
     starting_balance = None
@@ -210,14 +270,27 @@ def main():
     consecutive_losses = 0
     daily_start_balance = None
     current_date = None
-    trading_paused = False
-    pause_reason = None
+    daily_loss_paused = False
+    drawdown_paused = False
+    
+    # 统一交易状态（使用共享模块）
+    trading_state = TradingState(
+        equity=0.0,
+        peak_equity=0.0,
+        daily_start_equity=0.0,
+        consecutive_losses=consecutive_losses,
+        daily_loss_paused=daily_loss_paused,
+        drawdown_paused=drawdown_paused
+    )
     
     if enable_trading:
         try:
             starting_balance = client.get_account_balance_usdt()
             peak_equity = starting_balance
             daily_start_balance = starting_balance
+            trading_state.equity = starting_balance
+            trading_state.peak_equity = starting_balance
+            trading_state.daily_start_equity = starting_balance
             logger.info("💰 初始余额: %.2f USDT", starting_balance)
             
             # 同步持仓
@@ -234,9 +307,18 @@ def main():
                     open_position_qty = abs(pos_amt)
                     logger.info("🔄 同步持仓: 做空 %.4f", abs(pos_amt))
                 
-                # 尝试恢复持仓状态
+                # 尝试恢复持仓状态（支持金字塔加仓）
                 saved_state = load_trading_state(logger)
-                if saved_state and saved_state.get('open_position_side') == open_position_side:
+                if saved_state and saved_state.get('positions'):
+                    positions = [position_from_dict(d) for d in saved_state.get('positions', [])]
+                    last_pyramid_time_str = saved_state.get('last_pyramid_time')
+                    last_pyramid_time = pd.to_datetime(last_pyramid_time_str) if last_pyramid_time_str else None
+                    # 更新派生变量
+                    update_derived_position_vars()
+                    logger.info("✅ 已恢复持仓状态: 仓位数量=%d, 总敞口=%.2f, 最高盈利=%.2f%%",
+                               len(positions), open_exposure, max_profit_pct*100)
+                elif saved_state and saved_state.get('open_position_side') != 'flat':
+                    # 旧版本状态恢复（兼容性）
                     open_entry_time = saved_state.get('open_entry_time')
                     if open_entry_time:
                         open_entry_time = pd.to_datetime(open_entry_time)
@@ -274,18 +356,18 @@ def main():
                             daily_start_balance = client.get_account_balance_usdt()
                             logger.info("📅 新的一天，重置每日起始余额: %.2f USDT", daily_start_balance)
                             
-                            # 解除每日亏损暂停
-                            if trading_paused and pause_reason == 'daily_loss':
-                                trading_paused = False
-                                pause_reason = None
-                                logger.info("✅ 解除每日亏损暂停")
+                            # 使用共享模块重置每日状态
+                            reset_daily_state(trading_state, daily_start_balance)
+                            # 如果之前回撤暂停，重置峰值权益
+                            if drawdown_paused:
+                                trading_state.peak_equity = daily_start_balance
                             
-                            # 解除回撤暂停，并重置峰值权益（将回撤归零）
-                            elif trading_paused and pause_reason == 'drawdown_pause':
-                                trading_paused = False
-                                pause_reason = None
-                                peak_equity = daily_start_balance
-                                logger.info("✅ 解除回撤暂停，回撤已重置为0%%")
+                            # 同步旧变量（用于兼容性）
+                            daily_loss_paused = trading_state.daily_loss_paused
+                            drawdown_paused = trading_state.drawdown_paused
+                            peak_equity = trading_state.peak_equity
+                            daily_start_balance = trading_state.daily_start_equity
+                            logger.info("✅ 已重置每日状态，解除所有暂停")
                         except Exception as e:
                             logger.warning("获取余额失败: %s", e)
             else:
@@ -326,117 +408,173 @@ def main():
                        should_trade, predicted_rr, direction, direction_prob, holding_period)
             
             # 风控检查
-            if enable_trading and not trading_paused:
+            if enable_trading and not daily_loss_paused and not drawdown_paused:
                 try:
                     current_balance = client.get_account_balance_usdt()
                     
-                    # 每日亏损检查
-                    if daily_start_balance is not None:
-                        daily_loss_pct = (daily_start_balance - current_balance) / daily_start_balance
-                        if daily_loss_pct > -max_daily_loss_pct:  # 修复：判断亏损绝对值
-                            trading_paused = True
-                            pause_reason = 'daily_loss'
-                            logger.error("🛑 触发每日最大亏损限制 %.2f%%, 暂停交易", daily_loss_pct * 100)
-                            
-                            # 发送风控警告邮件
-                            if email_notifier:
-                                try:
-                                    email_notifier.notify_risk_alert(
-                                        alert_type="每日亏损限制",
-                                        message=f"每日亏损达到 {daily_loss_pct * 100:.2f}%，已暂停交易",
-                                        balance=current_balance
-                                    )
-                                except Exception as e:
-                                    logger.warning("风控邮件通知失败: %s", e)
+                    # 更新统一交易状态
+                    trading_state.equity = current_balance
+                    if current_balance > trading_state.peak_equity:
+                        trading_state.peak_equity = current_balance
                     
-                    # 回撤检查（只在非暂停状态检查）
-                    if peak_equity is not None and not trading_paused:
-                        current_drawdown = (peak_equity - current_balance) / peak_equity
-                        if current_drawdown > max_drawdown_pause:
-                            trading_paused = True
-                            pause_reason = 'drawdown_pause'
-                            logger.error("🛑 触发回撤暂停 %.2f%%, 暂停交易至明日", current_drawdown * 100)
-                            
-                            # 发送风控警告邮件
-                            if email_notifier:
-                                try:
-                                    email_notifier.notify_risk_alert(
-                                        alert_type="回撤暂停",
-                                        message=f"回撤达到 {current_drawdown * 100:.2f}%，已暂停交易至明日",
-                                        current_drawdown=current_drawdown * 100,
-                                        balance=current_balance
-                                    )
-                                except Exception as e:
-                                    logger.warning("风控邮件通知失败: %s", e)
+                    # 使用共享模块更新风控状态
+                    update_trading_state(
+                        trading_state=trading_state,
+                        pnl=0.0,  # 无新交易，仅检查风控
+                        current_time=pd.Timestamp.now(tz='UTC'),
+                        max_daily_loss_pct=max_daily_loss_pct,
+                        max_drawdown_pause=max_drawdown_pause
+                    )
                     
-                    # 更新峰值权益
-                    if peak_equity is None or current_balance > peak_equity:
-                        peak_equity = current_balance
+                    # 同步旧变量（用于兼容性）
+                    daily_loss_paused = trading_state.daily_loss_paused
+                    drawdown_paused = trading_state.drawdown_paused
+                    peak_equity = trading_state.peak_equity
+                    daily_start_balance = trading_state.daily_start_equity
+                    consecutive_losses = trading_state.consecutive_losses
+                    
+                    # 检查是否触发新的风控暂停，发送邮件通知
+                    if daily_loss_paused:
+                        daily_loss_pct = (trading_state.daily_start_equity - trading_state.equity) / trading_state.daily_start_equity
+                        logger.error("🛑 触发每日最大亏损限制 %.2f%%, 暂停交易至明日", daily_loss_pct * 100)
+                        if email_notifier:
+                            try:
+                                email_notifier.notify_risk_alert(
+                                    alert_type="每日亏损限制",
+                                    message=f"每日亏损达到 {daily_loss_pct * 100:.2f}%，已暂停交易",
+                                    balance=current_balance
+                                )
+                            except Exception as e:
+                                logger.warning("风控邮件通知失败: %s", e)
+                    
+                    if drawdown_paused:
+                        current_drawdown = (trading_state.peak_equity - trading_state.equity) / trading_state.peak_equity
+                        logger.error("🛑 触发回撤暂停 %.2f%%, 暂停交易至明日", current_drawdown * 100)
+                        if email_notifier:
+                            try:
+                                email_notifier.notify_risk_alert(
+                                    alert_type="回撤暂停",
+                                    message=f"回撤达到 {current_drawdown * 100:.2f}%，已暂停交易至明日",
+                                    current_drawdown=current_drawdown * 100,
+                                    balance=current_balance
+                                )
+                            except Exception as e:
+                                logger.warning("风控邮件通知失败: %s", e)
+                                
                 except Exception as e:
                     logger.warning("风控检查失败: %s", e)
             
-            # 平仓逻辑：持仓周期 + 止损检查
-            if enable_trading and open_position_side != "flat":
+            # 平仓逻辑：持仓周期 + 止损检查（支持金字塔加仓）
+            if enable_trading and len(positions) > 0:
                 try:
-                    # 计算持仓K线数（基于时间）
+                    # 计算持仓K线数（基于首仓时间）
                     bars_held = 0
-                    if open_entry_time is not None:
-                        time_diff = (current_close_time - open_entry_time).total_seconds()
+                    if positions[0].entry_time is not None:
+                        time_diff = (current_close_time - positions[0].entry_time).total_seconds()
                         bars_held = int(time_diff / (15 * 60))  # 15分钟K线
                     
-                    # 计算当前盈亏
-                    if open_position_side == "long":
-                        price_change_pct = (current_price - open_entry_price) / open_entry_price
-                    else:
-                        price_change_pct = (open_entry_price - current_price) / open_entry_price
+                    # 计算多仓位总盈亏百分比和总敞口
+                    total_pnl_pct = 0.0
+                    total_exposure = 0.0
+                    total_qty = 0.0
+                    weighted_entry_sum = 0.0
+                    peak_pnl_pct = 0.0
+                    peak_updated = False
                     
-                    # 止损检查（每次轮询都检查）
+                    for pos in positions:
+                        # 计算单个仓位价格变化百分比
+                        if pos.side == 'long':
+                            price_change_pct = (current_price - pos.entry_price) / pos.entry_price
+                        else:
+                            price_change_pct = (pos.entry_price - current_price) / pos.entry_price
+                        
+                        # 单个仓位盈亏百分比
+                        pnl_pct = price_change_pct * pos.exposure
+                        total_pnl_pct += pnl_pct
+                        total_exposure += pos.exposure
+                        total_qty += pos.quantity
+                        weighted_entry_sum += pos.entry_price * pos.quantity
+                        
+                        # 更新单个仓位的峰值（用于追踪止损）
+                        if pnl_pct > pos.peak_pnl_pct:
+                            pos.peak_pnl_pct = pnl_pct
+                            pos.peak_price = current_price
+                            peak_updated = True
+                        
+                        # 更新全局峰值
+                        if pnl_pct > peak_pnl_pct:
+                            peak_pnl_pct = pnl_pct
+                    
+                    # 计算平均入场价（用于日志和邮件）
+                    avg_entry_price = weighted_entry_sum / total_qty if total_qty > 0 else positions[0].entry_price
+                    
+                    # 统一平仓条件检查（类似金字塔回测逻辑）
                     should_close = False
                     close_reason = ""
+                    stop_loss_hit = False
+                    trailing_stop_hit = False
                     
-                    # 1. 固定止损 -3%
-                    if price_change_pct < stop_loss_pct:
+                    # 1. 固定止损
+                    if total_pnl_pct <= stop_loss_pct:
                         should_close = True
-                        close_reason = f"止损({price_change_pct*100:.2f}% < {stop_loss_pct*100:.1f}%)"
+                        close_reason = f"固定止损({total_pnl_pct*100:.2f}% ≤ {stop_loss_pct*100:.1f}%)"
+                        stop_loss_hit = True
                     
-                    # 2. 追踪止损（价格距最高点下降2%）
-                    elif price_change_pct > 0.01:  # 盈利>1%启动追踪
-                        # 更新最高盈利点
-                        if price_change_pct > max_profit_pct:
-                            max_profit_pct = price_change_pct
-                            logger.info("📈 更新最高盈利: %.2f%%", max_profit_pct * 100)
-                            
-                            # 更新状态文件
-                            save_trading_state({
-                                'open_position_side': open_position_side,
-                                'open_entry_time': str(open_entry_time),
-                                'predicted_holding_period': predicted_holding_period,
-                                'max_profit_pct': max_profit_pct,
-                                'open_exposure': open_exposure,
-                                'open_entry_price': open_entry_price,
-                                'open_position_qty': open_position_qty,
-                                'timestamp': str(pd.Timestamp.now(tz='UTC'))
-                            }, logger)
-                        
-                        # 价格距最高点下降2%
-                        price_drop_from_peak = max_profit_pct - price_change_pct
-                        if price_drop_from_peak > 0.02:
+                    # 2. 追踪止损（任一仓位盈利>1%后启用）
+                    elif peak_pnl_pct > 0.01:  # trailing_stop_trigger
+                        # 计算从最高点的回撤
+                        pnl_drop_from_peak = peak_pnl_pct - total_pnl_pct
+                        if pnl_drop_from_peak > 0.02:  # trailing_stop_distance
                             should_close = True
-                            close_reason = f"追踪止损(价格从{max_profit_pct*100:.2f}%回落至{price_change_pct*100:.2f}%, 下跌{price_drop_from_peak*100:.2f}%)"
+                            close_reason = f"追踪止损(从{peak_pnl_pct*100:.2f}%回落{total_pnl_pct*100:.2f}%)"
+                            trailing_stop_hit = True
                     
-                    # 3. 持仓周期检查（只在新K线时检查）
-                    if not should_close and is_new_bar and bars_held >= predicted_holding_period:
+                    # 3. 持仓周期（以首仓为准）
+                    elif bars_held >= positions[0].hold_period:
                         should_close = True
-                        close_reason = f"持仓周期({bars_held}/{predicted_holding_period})K线"
+                        close_reason = f"持仓周期({bars_held}/{positions[0].hold_period})"
+                    
+                    # 更新派生变量（当前盈亏百分比和价格变化百分比用于日志）
+                    # 注意：这里我们使用总盈亏百分比和平均入场价来计算价格变化百分比
+                    # 对于日志和邮件，我们使用总盈亏百分比和平均入场价
+                    current_pnl_pct = total_pnl_pct
+                    if positions[0].side == 'long':
+                        price_change_pct = (current_price - avg_entry_price) / avg_entry_price
+                    else:
+                        price_change_pct = (avg_entry_price - current_price) / avg_entry_price
+                    
+                    # 更新全局max_profit_pct（用于状态保存）
+                    max_profit_pct = peak_pnl_pct
+                    
+                    # 如果峰值更新，保存状态
+                    if peak_updated:
+                        logger.info("📈 更新最高盈利: %.2f%%", max_profit_pct * 100)
+                        # 更新派生变量以确保一致性
+                        update_derived_position_vars()
+                        # 更新状态文件
+                        positions_data = [position_to_dict(p) for p in positions]
+                        save_trading_state({
+                            'version': 2,
+                            'positions': positions_data,
+                            'last_pyramid_time': str(last_pyramid_time) if last_pyramid_time else None,
+                            'open_position_side': open_position_side,
+                            'open_entry_time': str(open_entry_time),
+                            'predicted_holding_period': predicted_holding_period,
+                            'max_profit_pct': max_profit_pct,
+                            'open_exposure': open_exposure,
+                            'open_entry_price': open_entry_price,
+                            'open_position_qty': open_position_qty,
+                            'timestamp': str(pd.Timestamp.now(tz='UTC'))
+                        }, logger)
                     
                     # 执行平仓
                     if should_close:
                         side = "SELL" if open_position_side == "long" else "BUY"
                         position_side = "LONG" if open_position_side == "long" else "SHORT"
                         
-                        logger.info("📤 平仓 %s, 数量=%.4f, 原因=%s, 盈亏=%.2f%%",
+                        logger.info("📤 平仓 %s, 数量=%.4f, 原因=%s, 盈亏=%.2f%% (价格变化%.2f%%)",
                                    open_position_side, open_position_qty, close_reason,
-                                   price_change_pct * 100)
+                                   current_pnl_pct * 100, price_change_pct * 100)
                         
                         order_res = client.place_market_order(
                             symbol, side, position_side, open_position_qty, reduce_only=True
@@ -445,8 +583,24 @@ def main():
                         if order_res.success:
                             logger.info("✅ 平仓成功: %s", order_res.raw)
                             
-                            # 计算盈亏
-                            pnl = current_balance * open_exposure * price_change_pct
+                            # 计算盈亏（与回测一致）
+                            pnl = calculate_pnl(position, current_price, trading_state.equity)
+                            
+                            # 更新交易状态（权益、连续亏损计数、风控暂停）
+                            update_trading_state(
+                                trading_state=trading_state,
+                                pnl=pnl,
+                                current_time=pd.Timestamp.now(tz='UTC'),
+                                max_daily_loss_pct=max_daily_loss_pct,
+                                max_drawdown_pause=max_drawdown_pause
+                            )
+                            
+                            # 同步旧变量（用于兼容性）
+                            consecutive_losses = trading_state.consecutive_losses
+                            daily_loss_paused = trading_state.daily_loss_paused
+                            drawdown_paused = trading_state.drawdown_paused
+                            peak_equity = trading_state.peak_equity
+                            daily_start_balance = trading_state.daily_start_equity
                             
                             # 发送平仓邮件通知
                             if email_notifier:
@@ -457,26 +611,18 @@ def main():
                                         entry_price=open_entry_price,
                                         exit_price=current_price,
                                         pnl=pnl,
-                                        pnl_pct=price_change_pct * 100,
+                                        pnl_pct=current_pnl_pct * 100,
                                         reason=close_reason,
-                                        balance=current_balance
+                                        balance=trading_state.equity
                                     )
                                 except Exception as e:
                                     logger.warning("平仓邮件通知失败: %s", e)
                             
-                            # 更新统计
-                            if price_change_pct > 0:
-                                consecutive_losses = 0
-                            else:
-                                consecutive_losses += 1
-                            
-                            open_position_side = "flat"
-                            open_position_qty = 0.0
-                            open_entry_price = 0.0
-                            open_exposure = 0.0
-                            open_entry_time = None
-                            predicted_holding_period = 0
-                            max_profit_pct = 0.0  # 重置追踪止损
+                            # 重置持仓状态（清空仓位列表）
+                            positions.clear()
+                            last_pyramid_time = None
+                            # 更新派生变量
+                            update_derived_position_vars()
                             
                             # 删除状态文件
                             try:
@@ -491,86 +637,228 @@ def main():
                 except Exception as e:
                     logger.exception("平仓逻辑异常: %s", e)
             
-            # 开仓逻辑
-            if enable_trading and is_new_bar and should_trade and open_position_side == "flat" and not trading_paused:
+            # 加仓逻辑（金字塔加仓）
+            if pyramid_enabled and enable_trading and is_new_bar and should_trade and len(positions) > 0 and len(positions) < pyramid_max_count and not daily_loss_paused and not drawdown_paused:
                 try:
-                    current_balance = client.get_account_balance_usdt()
-                    current_drawdown = (peak_equity - current_balance) / peak_equity if peak_equity else 0
+                    # 计算当前总盈亏百分比（重用平仓逻辑中的计算，但这里需要重新计算或存储）
+                    # 由于平仓逻辑中已经计算了total_pnl_pct，但那是针对所有仓位的，我们可以重新计算
+                    # 为了简化，我们重新计算总盈亏百分比
+                    total_pnl_pct = 0.0
+                    total_exposure = 0.0
+                    for pos in positions:
+                        if pos.side == 'long':
+                            price_change_pct = (current_price - pos.entry_price) / pos.entry_price
+                        else:
+                            price_change_pct = (pos.entry_price - current_price) / pos.entry_price
+                        pnl_pct = price_change_pct * pos.exposure
+                        total_pnl_pct += pnl_pct
+                        total_exposure += pos.exposure
                     
-                    # 计算动态敞口
-                    optimal_exposure = calculate_dynamic_exposure(
+                    # 计算当前回撤（基于交易状态）
+                    if trading_state.peak_equity > 0:
+                        current_drawdown = (trading_state.peak_equity - trading_state.equity) / trading_state.peak_equity
+                    else:
+                        current_drawdown = 0
+                    
+                    # 计算当前信号敞口
+                    new_exposure = calculate_dynamic_exposure(
                         predicted_rr=predicted_rr,
                         direction_prob=direction_prob,
                         current_drawdown=current_drawdown,
-                        consecutive_losses=consecutive_losses,
+                        consecutive_losses=trading_state.consecutive_losses,
                         max_exposure=max_exposure
                     )
                     
-                    # 计算开仓数量
-                    # 敞口 = 杠杆 × 仓位比例
-                    # 这里简化为：名义价值 = 余额 × 敞口
-                    notional_value = current_balance * optimal_exposure
-                    quantity = notional_value / current_price
+                    # 加仓条件检查
+                    can_pyramid = (
+                        total_pnl_pct > pyramid_profit_threshold and
+                        direction == (1 if positions[0].side == 'long' else -1) and
+                        predicted_rr >= pyramid_min_rr and
+                        direction_prob >= pyramid_min_prob and
+                        (last_pyramid_time is None or (current_close_time - last_pyramid_time).total_seconds() >= pyramid_min_bars * 15 * 60) and
+                        total_exposure + new_exposure <= max_total_exposure
+                    )
                     
-                    # 向下取整到合约精度
-                    quantity = float(int(quantity * 1000) / 1000)
+                    if can_pyramid:
+                        # 计算加仓数量
+                        notional_value = trading_state.equity * new_exposure
+                        quantity = notional_value / current_price
+                        quantity = float(int(quantity * 1000) / 1000)
+                        
+                        if quantity > 0:
+                            desired_side = "long" if direction == 1 else "short"
+                            side = "BUY" if desired_side == "long" else "SELL"
+                            position_side = "LONG" if desired_side == "long" else "SHORT"
+                            
+                            logger.info("📥 加仓 %s, 数量=%.4f, 敞口=%.2f倍, 总敞口=%.2f倍, RR=%.2f, prob=%.3f",
+                                       desired_side, quantity, new_exposure, total_exposure + new_exposure, predicted_rr, direction_prob)
+                            
+                            order_res = client.place_market_order(symbol, side, position_side, quantity)
+                            
+                            if order_res.success:
+                                logger.info("✅ 加仓成功: %s", order_res.raw)
+                                # 创建新仓位并添加到列表
+                                new_position = Position(
+                                    side=desired_side,
+                                    entry_price=current_price,
+                                    entry_time=current_close_time,
+                                    exposure=new_exposure,
+                                    hold_period=positions[0].hold_period,  # 继承首仓周期
+                                    quantity=quantity,
+                                    peak_pnl_pct=0.0,
+                                    peak_price=0.0
+                                )
+                                positions.append(new_position)
+                                last_pyramid_time = current_close_time
+                                # 更新派生变量
+                                update_derived_position_vars()
+                                
+                                # 发送加仓邮件通知
+                                if email_notifier:
+                                    try:
+                                        email_notifier.notify_pyramid_position(
+                                            side=desired_side,
+                                            quantity=quantity,
+                                            price=current_price,
+                                            exposure=new_exposure,
+                                            total_exposure=total_exposure + new_exposure,
+                                            pyramid_count=len(positions),
+                                            rr=predicted_rr,
+                                            prob=direction_prob,
+                                            balance=trading_state.equity
+                                        )
+                                    except Exception as e:
+                                        logger.warning("加仓邮件通知失败: %s", e)
+                                
+                                # 保存状态
+                                positions_data = [position_to_dict(p) for p in positions]
+                                save_trading_state({
+                                    'version': 2,
+                                    'positions': positions_data,
+                                    'last_pyramid_time': str(last_pyramid_time) if last_pyramid_time else None,
+                                    'open_position_side': open_position_side,
+                                    'open_entry_time': str(open_entry_time),
+                                    'predicted_holding_period': predicted_holding_period,
+                                    'max_profit_pct': max_profit_pct,
+                                    'open_exposure': open_exposure,
+                                    'open_entry_price': open_entry_price,
+                                    'open_position_qty': open_position_qty,
+                                    'timestamp': str(pd.Timestamp.now(tz='UTC'))
+                                }, logger)
+                            else:
+                                logger.error("❌ 加仓失败: %s", order_res.raw)
+                except Exception as e:
+                    logger.exception("加仓逻辑异常: %s", e)
+            
+            # 开仓逻辑
+            if enable_trading and is_new_bar and should_trade and len(positions) == 0 and not daily_loss_paused and not drawdown_paused:
+                try:
+                    current_balance = client.get_account_balance_usdt()
                     
-                    if quantity <= 0:
-                        logger.warning("⚠️  开仓数量<=0，跳过")
-                    else:
-                        desired_side = "long" if direction == 1 else "short"
-                        side = "BUY" if desired_side == "long" else "SELL"
-                        position_side = "LONG" if desired_side == "long" else "SHORT"
+                    # 更新统一交易状态
+                    trading_state.equity = current_balance
+                    if current_balance > trading_state.peak_equity:
+                        trading_state.peak_equity = current_balance
+                    
+                    # 计算当前回撤
+                    current_drawdown = (trading_state.peak_equity - trading_state.equity) / trading_state.peak_equity if trading_state.peak_equity else 0
+                    
+                    # 使用共享模块判断是否应该开仓
+                    if should_open_position(
+                        trading_state=trading_state,
+                        should_trade=should_trade,
+                        current_drawdown=current_drawdown,
+                        max_drawdown_pause=max_drawdown_pause
+                    ):
+                        # 计算动态敞口
+                        optimal_exposure = calculate_dynamic_exposure(
+                            predicted_rr=predicted_rr,
+                            direction_prob=direction_prob,
+                            current_drawdown=current_drawdown,
+                            consecutive_losses=trading_state.consecutive_losses,
+                            max_exposure=max_exposure
+                        )
                         
-                        logger.info("📥 开仓 %s, 数量=%.4f, 敞口=%.2f倍, RR=%.2f, prob=%.3f",
-                                   desired_side, quantity, optimal_exposure, predicted_rr, direction_prob)
+                        # 计算开仓数量
+                        # 敞口 = 杠杆 × 仓位比例
+                        # 这里简化为：名义价值 = 余额 × 敞口
+                        notional_value = trading_state.equity * optimal_exposure
+                        quantity = notional_value / current_price
                         
-                        order_res = client.place_market_order(symbol, side, position_side, quantity)
+                        # 向下取整到合约精度
+                        quantity = float(int(quantity * 1000) / 1000)
                         
-                        if order_res.success:
-                            logger.info("✅ 开仓成功: %s", order_res.raw)
-                            open_position_side = desired_side
-                            open_position_qty = quantity
-                            open_entry_price = current_price
-                            open_exposure = optimal_exposure
-                            open_entry_time = current_close_time  # 记录开仓时的K线时间
-                            predicted_holding_period = int(holding_period)  # 记录预测周期
-                            max_profit_pct = 0.0  # 初始化追踪止损
-                            
-                            # 发送开仓邮件通知
-                            if email_notifier:
-                                try:
-                                    email_notifier.notify_open_position(
-                                        side=desired_side,
-                                        quantity=quantity,
-                                        price=current_price,
-                                        exposure=optimal_exposure,
-                                        rr=predicted_rr,
-                                        prob=direction_prob,
-                                        balance=current_balance
-                                    )
-                                except Exception as e:
-                                    logger.warning("开仓邮件通知失败: %s", e)
-                            
-                            # 保存状态
-                            save_trading_state({
-                                'open_position_side': open_position_side,
-                                'open_entry_time': str(open_entry_time),
-                                'predicted_holding_period': predicted_holding_period,
-                                'max_profit_pct': max_profit_pct,
-                                'open_exposure': open_exposure,
-                                'open_entry_price': open_entry_price,
-                                'open_position_qty': open_position_qty,
-                                'timestamp': str(pd.Timestamp.now(tz='UTC'))
-                            }, logger)
+                        if quantity <= 0:
+                            logger.warning("⚠️  开仓数量<=0，跳过")
                         else:
-                            logger.error("❌ 开仓失败: %s", order_res.raw)
+                            desired_side = "long" if direction == 1 else "short"
+                            side = "BUY" if desired_side == "long" else "SELL"
+                            position_side = "LONG" if desired_side == "long" else "SHORT"
+                            
+                            logger.info("📥 开仓 %s, 数量=%.4f, 敞口=%.2f倍, RR=%.2f, prob=%.3f",
+                                       desired_side, quantity, optimal_exposure, predicted_rr, direction_prob)
+                            
+                            order_res = client.place_market_order(symbol, side, position_side, quantity)
+                            
+                            if order_res.success:
+                                logger.info("✅ 开仓成功: %s", order_res.raw)
+                                
+                                # 创建Position对象并添加到仓位列表
+                                new_position = Position(
+                                    side=desired_side,
+                                    entry_price=current_price,
+                                    entry_time=current_close_time,
+                                    exposure=optimal_exposure,
+                                    hold_period=int(holding_period),
+                                    quantity=quantity,
+                                    peak_pnl_pct=0.0,
+                                    peak_price=0.0
+                                )
+                                positions.append(new_position)
+                                last_pyramid_time = current_close_time  # 记录开仓时间（也视为加仓时间）
+                                
+                                # 更新派生变量
+                                update_derived_position_vars()
+                                
+                                # 发送开仓邮件通知（使用派生变量）
+                                if email_notifier:
+                                    try:
+                                        email_notifier.notify_open_position(
+                                            side=open_position_side,
+                                            quantity=open_position_qty,
+                                            price=open_entry_price,
+                                            exposure=open_exposure,
+                                            rr=predicted_rr,
+                                            prob=direction_prob,
+                                            balance=trading_state.equity
+                                        )
+                                    except Exception as e:
+                                        logger.warning("开仓邮件通知失败: %s", e)
+                                
+                                # 保存状态
+                                positions_data = [position_to_dict(p) for p in positions]
+                                save_trading_state({
+                                    'version': 2,
+                                    'positions': positions_data,
+                                    'last_pyramid_time': str(last_pyramid_time) if last_pyramid_time else None,
+                                    'open_position_side': open_position_side,
+                                    'open_entry_time': str(open_entry_time),
+                                    'predicted_holding_period': predicted_holding_period,
+                                    'max_profit_pct': max_profit_pct,
+                                    'open_exposure': open_exposure,
+                                    'open_entry_price': open_entry_price,
+                                    'open_position_qty': open_position_qty,
+                                    'timestamp': str(pd.Timestamp.now(tz='UTC'))
+                                }, logger)
+                            else:
+                                logger.error("❌ 开仓失败: %s", order_res.raw)
+
                 
                 except Exception as e:
                     logger.exception("开仓逻辑异常: %s", e)
             
-            logger.info("💼 持仓=%s, 余额=%.2f, 暂停=%s", open_position_side, 
-                       current_balance if enable_trading else 0, trading_paused)
+            logger.info("💼 持仓=%s, 余额=%.2f, 每日亏损暂停=%s, 回撤暂停=%s", open_position_side, 
+                       current_balance if enable_trading else 0, daily_loss_paused, drawdown_paused)
         
         except Exception as e:
             logger.exception("主循环异常: %s", e)

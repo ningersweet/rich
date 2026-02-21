@@ -8,9 +8,11 @@
 - 多层风控回测
 - 结果统计和输出
 """
-import sys, os
+import sys
+import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import pandas as pd, numpy as np
+import pandas as pd
+import numpy as np
 from pathlib import Path
 import logging
 from datetime import datetime
@@ -18,6 +20,11 @@ from btc_quant.config import load_config
 from btc_quant.data import load_klines
 from btc_quant.features import build_features_and_labels
 from btc_quant.risk_reward_model import TwoStageRiskRewardStrategy
+from btc_quant.trading import (
+    Position, TradingState, calculate_dynamic_exposure,
+    should_open_position, should_close_position, calculate_pnl,
+    update_trading_state, reset_daily_state
+)
 
 # 日志配置
 log_file = Path('../logs') / f'backtest_2024_model_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
@@ -25,7 +32,7 @@ log_file.parent.mkdir(exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s-%(levelname)s-%(message)s',
+    format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[
         logging.StreamHandler(),
         logging.FileHandler(log_file, encoding='utf-8')
@@ -46,116 +53,238 @@ MAX_DRAWDOWN_PAUSE=0.10
 USE_TRAILING_STOP=True
 RR_THRESHOLD=2.5
 PROB_THRESHOLD=0.70
+MAX_HOLDING_PERIOD=50  # 与训练脚本保持一致
 OUTPUT_DIR=Path('backtest_results')
 
-def calculate_dynamic_exposure(predicted_rr,direction_prob,current_drawdown=0,consecutive_losses=0,max_exposure=10.0):
-    """动态敞口计算"""
-    rr_factor=min(predicted_rr/2.5,2.0)
-    prob_factor=max((direction_prob-0.5)/0.5,0)
-    base_exposure=2.0+rr_factor*3.0+prob_factor*3.0
-    if current_drawdown>0.02:
-        drawdown_penalty=max(0.3,1.0-(current_drawdown-0.02)*15)
-    else:
-        drawdown_penalty=1.0
-    if consecutive_losses>=2:
-        loss_penalty=max(0.2,1.0-min(consecutive_losses-1,5)*0.15)
-    else:
-        loss_penalty=1.0
-    final_exposure=base_exposure*drawdown_penalty*loss_penalty
-    return np.clip(final_exposure,1.0,max_exposure)
 
-def advanced_risk_backtest(klines,predictions,initial_balance=1000.0,max_exposure=10.0,stop_loss_pct=-0.03,max_daily_loss_pct=-0.20,max_drawdown_pause=0.10,use_trailing_stop=True):
-    """多层风控回测引擎"""
-    equity,peak_equity,position,trades=initial_balance,initial_balance,None,[]
-    daily_start_equity,current_date=initial_balance,None
-    daily_loss_paused,drawdown_paused,consecutive_losses=False,False,0
+
+def advanced_risk_backtest(
+    klines: pd.DataFrame,
+    predictions: pd.DataFrame,
+    initial_balance: float = 1000.0,
+    max_exposure: float = 10.0,
+    stop_loss_pct: float = -0.03,
+    max_daily_loss_pct: float = -0.20,
+    max_drawdown_pause: float = 0.10,
+    use_trailing_stop: bool = True
+) -> dict:
+    """多层风控回测引擎（使用共享交易逻辑模块）"""
+    # 初始化交易状态
+    trading_state = TradingState(
+        equity=initial_balance,
+        peak_equity=initial_balance,
+        daily_start_equity=initial_balance,
+        consecutive_losses=0,
+        daily_loss_paused=False,
+        drawdown_paused=False
+    )
+    
+    position = None  # Position对象
+    trades = []
+    current_date = None
+    
     for i in range(len(predictions)):
-        current_time,current_price=klines.iloc[i]['open_time'],klines.iloc[i]['close']
-        current_day=pd.Timestamp(current_time).date()
-        if current_date!=current_day:
-            current_date,daily_start_equity=current_day,equity
-            if daily_loss_paused:
-                daily_loss_paused=False
-                logger.info(f"[{current_time}]新的一天,恢复交易(每日亏损暂停已解除)")
-            if drawdown_paused:
-                drawdown_paused,current_drawdown=False,0
-                logger.info(f"[{current_time}]新的一天,恢复交易(回撤暂停已解除)")
-        current_drawdown=(peak_equity-equity)/peak_equity if peak_equity>0 else 0
+        current_time = klines.iloc[i]['open_time']
+        current_price = klines.iloc[i]['close']
+        current_day = pd.Timestamp(current_time).date()
+        
+        # 新的一天重置状态
+        if current_date != current_day:
+            current_date = current_day
+            reset_daily_state(trading_state, trading_state.equity)
+            logger.info(f"[{current_time}] 新的一天，重置每日状态")
+        
+        # 计算当前回撤
+        current_drawdown = (trading_state.peak_equity - trading_state.equity) / trading_state.peak_equity if trading_state.peak_equity > 0 else 0
+        
+        # 平仓检查
         if position is not None:
-            bars_held=i-position['entry_idx']
-            if position['side']==1:
-                price_change_pct=(current_price-position['entry_price'])/position['entry_price']
-            else:
-                price_change_pct=(position['entry_price']-current_price)/position['entry_price']
-            current_pnl_pct=price_change_pct*position['exposure']
-            if current_pnl_pct>position['peak_pnl_pct']:
-                position['peak_pnl_pct'],position['peak_price']=current_pnl_pct,current_price
-            should_close,close_reason,stop_loss_hit,trailing_stop_hit=False,"",False,False
-            if current_pnl_pct<=stop_loss_pct:
-                should_close,close_reason,stop_loss_hit=True,"固定止损",True
-            elif use_trailing_stop and position['peak_pnl_pct']>0.01:
-                if position['side']==1:
-                    drawdown_from_peak=(position['peak_price']-current_price)/position['peak_price']
-                else:
-                    drawdown_from_peak=(current_price-position['peak_price'])/position['peak_price']
-                if drawdown_from_peak>0.02:
-                    should_close,close_reason,trailing_stop_hit=True,"追踪止损",True
-            elif bars_held>=position['hold_period']:
-                should_close,close_reason=True,"周期到期"
+            # 计算已持仓周期数
+            bars_held = i - position.entry_idx
+            
+            # 使用共享模块判断是否应该平仓
+            should_close, close_reason, stop_loss_hit, trailing_stop_hit = should_close_position(
+                position=position,
+                current_price=current_price,
+                stop_loss_pct=stop_loss_pct,
+                use_trailing_stop=use_trailing_stop,
+                trailing_stop_trigger=0.01,
+                trailing_stop_distance=0.02,
+                max_hold_period=position.hold_period,
+                current_hold_period=bars_held
+            )
+            
             if should_close:
-                pnl=equity*current_pnl_pct
-                equity+=pnl
-                if equity>peak_equity:
-                    peak_equity=equity
-                if pnl<=0:
-                    consecutive_losses+=1
+                # 计算盈亏
+                pnl = calculate_pnl(position, current_price, trading_state.equity)
+                
+                # 计算价格变化百分比（用于交易记录）
+                if position.side == 'long':
+                    price_change_pct = (current_price - position.entry_price) / position.entry_price
                 else:
-                    consecutive_losses=0
-                trades.append({'entry_time':klines.iloc[position['entry_idx']]['open_time'],'exit_time':current_time,'side':'long' if position['side']==1 else 'short','entry_price':position['entry_price'],'exit_price':current_price,'exposure':position['exposure'],'price_change_pct':price_change_pct*100,'pnl_pct':current_pnl_pct*100,'pnl':pnl,'equity_after':equity,'close_reason':close_reason,'stop_loss_hit':stop_loss_hit,'trailing_stop_hit':trailing_stop_hit,'consecutive_losses':consecutive_losses})
-                position=None
-                daily_loss_pct=(equity-daily_start_equity)/daily_start_equity
-                if daily_loss_pct<max_daily_loss_pct:
-                    daily_loss_paused=True
-                    logger.warning(f"[{current_time}]触发每日最大亏损限制:{daily_loss_pct*100:.2f}%,暂停交易至明日")
-                current_drawdown=(peak_equity-equity)/peak_equity if peak_equity>0 else 0
-                if current_drawdown>max_drawdown_pause:
-                    drawdown_paused=True
-                    logger.warning(f"[{current_time}]触发回撤暂停:{current_drawdown*100:.2f}%,暂停交易至明日")
+                    price_change_pct = (position.entry_price - current_price) / position.entry_price
+                
+                current_pnl_pct = price_change_pct * position.exposure
+                
+                # 更新风控状态（检查每日亏损和回撤暂停）
+                update_trading_state(
+                    trading_state=trading_state,
+                    pnl=pnl,
+                    current_time=pd.Timestamp(current_time),
+                    max_daily_loss_pct=max_daily_loss_pct,
+                    max_drawdown_pause=max_drawdown_pause
+                )
+                
+                # 创建交易记录（使用更新后的交易状态）
+                trade_record = {
+                    'entry_time': klines.iloc[position.entry_idx]['open_time'],
+                    'exit_time': current_time,
+                    'side': position.side,
+                    'entry_price': position.entry_price,
+                    'exit_price': current_price,
+                    'exposure': position.exposure,
+                    'price_change_pct': price_change_pct * 100,
+                    'pnl_pct': current_pnl_pct * 100,
+                    'pnl': pnl,
+                    'equity_after': trading_state.equity,
+                    'close_reason': close_reason,
+                    'stop_loss_hit': stop_loss_hit,
+                    'trailing_stop_hit': trailing_stop_hit,
+                    'consecutive_losses': trading_state.consecutive_losses
+                }
+                trades.append(trade_record)
+                
+                # 清空持仓
+                position = None
+        
+        # 开仓检查
         if position is None and predictions.iloc[i]['should_trade']:
-            if daily_loss_paused or drawdown_paused:
+            # 检查是否允许开仓
+            if not should_open_position(
+                trading_state=trading_state,
+                should_trade=True,
+                current_drawdown=current_drawdown,
+                max_drawdown_pause=max_drawdown_pause
+            ):
                 continue
-            exposure=calculate_dynamic_exposure(predictions.iloc[i]['predicted_rr'],predictions.iloc[i]['direction_prob'],current_drawdown,consecutive_losses,max_exposure)
-            position={'side':predictions.iloc[i]['direction'],'entry_price':current_price,'entry_idx':i,'hold_period':int(predictions.iloc[i]['holding_period']),'exposure':exposure,'peak_pnl_pct':0,'peak_price':current_price}
+            
+            # 计算动态敞口
+            exposure = calculate_dynamic_exposure(
+                predicted_rr=predictions.iloc[i]['predicted_rr'],
+                direction_prob=predictions.iloc[i]['direction_prob'],
+                current_drawdown=current_drawdown,
+                consecutive_losses=trading_state.consecutive_losses,
+                max_exposure=max_exposure
+            )
+            
+            # 创建Position对象
+            # 转换方向：1 -> 'long', -1 -> 'short'
+            direction = predictions.iloc[i]['direction']
+            side = 'long' if direction == 1 else 'short'
+            
+            position = Position(
+                side=side,
+                entry_price=current_price,
+                entry_time=pd.Timestamp(current_time),
+                exposure=exposure,
+                hold_period=int(predictions.iloc[i]['holding_period']),
+                peak_pnl_pct=0.0,
+                peak_price=current_price
+            )
+            # 添加entry_idx用于回溯
+            position.entry_idx = i
+    
+    # 回测结束，强制平仓剩余持仓
     if position is not None:
-        current_price=klines.iloc[-1]['close']
-        if position['side']==1:
-            price_change_pct=(current_price-position['entry_price'])/position['entry_price']
+        current_price = klines.iloc[-1]['close']
+        exit_time = klines.iloc[-1]['open_time']
+        
+        # 计算盈亏
+        pnl = calculate_pnl(position, current_price, trading_state.equity)
+        
+        # 计算价格变化百分比
+        if position.side == 'long':
+            price_change_pct = (current_price - position.entry_price) / position.entry_price
         else:
-            price_change_pct=(position['entry_price']-current_price)/position['entry_price']
-        current_pnl_pct=price_change_pct*position['exposure']
-        pnl=equity*current_pnl_pct
-        equity+=pnl
-        trades.append({'entry_time':klines.iloc[position['entry_idx']]['open_time'],'exit_time':klines.iloc[-1]['open_time'],'side':'long' if position['side']==1 else 'short','entry_price':position['entry_price'],'exit_price':current_price,'exposure':position['exposure'],'price_change_pct':price_change_pct*100,'pnl_pct':current_pnl_pct*100,'pnl':pnl,'equity_after':equity,'close_reason':'强制平仓','stop_loss_hit':False,'trailing_stop_hit':False,'consecutive_losses':consecutive_losses})
-    total_return=(equity/initial_balance-1)*100
-    if len(trades)>0:
-        trades_df=pd.DataFrame(trades)
-        winning_trades,losing_trades=(trades_df['pnl']>0).sum(),(trades_df['pnl']<=0).sum()
-        win_rate=winning_trades/len(trades)*100
-        avg_win=trades_df[trades_df['pnl']>0]['pnl'].mean() if winning_trades>0 else 0
-        avg_loss=abs(trades_df[trades_df['pnl']<=0]['pnl'].mean()) if losing_trades>0 else 0
-        profit_loss_ratio=avg_win/avg_loss if avg_loss>0 else 0
-        peak=trades_df['equity_after'].expanding().max()
-        drawdown_series=(peak-trades_df['equity_after'])/peak*100
-        max_drawdown=drawdown_series.max()
-        stop_loss_count=len(trades_df[trades_df['stop_loss_hit']==True])
-        trailing_stop_count=len(trades_df[trades_df['trailing_stop_hit']==True])
-        avg_exposure=trades_df['exposure'].mean()
-        max_consecutive_losses=trades_df['consecutive_losses'].max()
+            price_change_pct = (position.entry_price - current_price) / position.entry_price
+        
+        current_pnl_pct = price_change_pct * position.exposure
+        
+        # 更新风控状态（检查每日亏损和回撤暂停）
+        update_trading_state(
+            trading_state=trading_state,
+            pnl=pnl,
+            current_time=pd.Timestamp(exit_time),
+            max_daily_loss_pct=max_daily_loss_pct,
+            max_drawdown_pause=max_drawdown_pause
+        )
+        
+        # 创建强制平仓交易记录
+        trade_record = {
+            'entry_time': klines.iloc[position.entry_idx]['open_time'],
+            'exit_time': exit_time,
+            'side': position.side,
+            'entry_price': position.entry_price,
+            'exit_price': current_price,
+            'exposure': position.exposure,
+            'price_change_pct': price_change_pct * 100,
+            'pnl_pct': current_pnl_pct * 100,
+            'pnl': pnl,
+            'equity_after': trading_state.equity,
+            'close_reason': '强制平仓',
+            'stop_loss_hit': False,
+            'trailing_stop_hit': False,
+            'consecutive_losses': trading_state.consecutive_losses
+        }
+        trades.append(trade_record)
+    
+    # 计算最终结果
+    total_return = (trading_state.equity / initial_balance - 1) * 100
+    
+    if len(trades) > 0:
+        trades_df = pd.DataFrame(trades)
+        winning_trades = (trades_df['pnl'] > 0).sum()
+        losing_trades = (trades_df['pnl'] <= 0).sum()
+        win_rate = winning_trades / len(trades) * 100
+        avg_win = trades_df[trades_df['pnl'] > 0]['pnl'].mean() if winning_trades > 0 else 0
+        avg_loss = abs(trades_df[trades_df['pnl'] <= 0]['pnl'].mean()) if losing_trades > 0 else 0
+        profit_loss_ratio = avg_win / avg_loss if avg_loss > 0 else 0
+        
+        # 计算最大回撤
+        peak = trades_df['equity_after'].expanding().max()
+        drawdown_series = (peak - trades_df['equity_after']) / peak * 100
+        max_drawdown = drawdown_series.max()
+        
+        # 统计风控触发
+        stop_loss_count = len(trades_df[trades_df['stop_loss_hit'] == True])
+        trailing_stop_count = len(trades_df[trades_df['trailing_stop_hit'] == True])
+        avg_exposure = trades_df['exposure'].mean()
+        max_consecutive_losses = trades_df['consecutive_losses'].max()
     else:
-        win_rate,profit_loss_ratio,max_drawdown,stop_loss_count,trailing_stop_count,avg_exposure,max_consecutive_losses,trades_df=0,0,0,0,0,0,0,None
-    return {'total_return':total_return,'final_equity':equity,'total_trades':len(trades),'win_rate':win_rate,'profit_loss_ratio':profit_loss_ratio,'max_drawdown':max_drawdown,'stop_loss_count':stop_loss_count,'trailing_stop_count':trailing_stop_count,'avg_exposure':avg_exposure,'max_consecutive_losses':max_consecutive_losses,'trades':trades_df}
+        win_rate = 0
+        profit_loss_ratio = 0
+        max_drawdown = 0
+        stop_loss_count = 0
+        trailing_stop_count = 0
+        avg_exposure = 0
+        max_consecutive_losses = 0
+        trades_df = None
+    
+    return {
+        'total_return': total_return,
+        'final_equity': trading_state.equity,
+        'total_trades': len(trades),
+        'win_rate': win_rate,
+        'profit_loss_ratio': profit_loss_ratio,
+        'max_drawdown': max_drawdown,
+        'stop_loss_count': stop_loss_count,
+        'trailing_stop_count': trailing_stop_count,
+        'avg_exposure': avg_exposure,
+        'max_consecutive_losses': max_consecutive_losses,
+        'trades': trades_df
+    }
 
-def run_backtest():
+def run_backtest() -> None:
     """主回测流程"""
     logger.info("="*80)
     logger.info("最终版回测-2024年模型-复利+动态敞口")
@@ -185,7 +314,7 @@ def run_backtest():
     X_backtest_top30=X_backtest_full[top_30_features]
     logger.info("\n生成预测信号...")
     predictions_dict=strategy.predict(X_backtest_top30,rr_threshold=RR_THRESHOLD,prob_threshold=PROB_THRESHOLD)
-    predictions=pd.DataFrame({'predicted_rr':predictions_dict['predicted_rr'],'direction':predictions_dict['direction'],'holding_period':predictions_dict['holding_period'].clip(1,30),'direction_prob':predictions_dict['direction_prob'],'should_trade':predictions_dict['should_trade']})
+    predictions=pd.DataFrame({'predicted_rr':predictions_dict['predicted_rr'],'direction':predictions_dict['direction'],'holding_period':predictions_dict['holding_period'].clip(1,MAX_HOLDING_PERIOD),'direction_prob':predictions_dict['direction_prob'],'should_trade':predictions_dict['should_trade']})
     logger.info(f"总样本数:{len(predictions)}")
     logger.info(f"应交易样本:{predictions['should_trade'].sum()}")
     logger.info(f"交易比例:{predictions['should_trade'].sum()/len(predictions)*100:.2f}%")
@@ -218,3 +347,7 @@ def run_backtest():
     logger.info("\n"+"="*80)
     logger.info("回测完成!")
     logger.info("="*80)
+
+
+if __name__ == '__main__':
+    run_backtest()

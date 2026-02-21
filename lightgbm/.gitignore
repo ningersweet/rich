@@ -114,3 +114,6 @@ deepseek_config.yaml
 email_config.yaml
 DEPLOY.md
 deploy_to_server.sh
+
+# 临时调试脚本
+debug_scripts/
