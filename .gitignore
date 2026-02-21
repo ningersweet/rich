@@ -122,3 +122,5 @@ deploy_to_server.sh
 # DeepSeek查询文件
 call_deepseek.py
 deepseek_query.md
+.qoder
+backtest_results
