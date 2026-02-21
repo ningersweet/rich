@@ -143,6 +143,12 @@ scp -r /Users/lemonshwang/project/rich/lightgbm/models/final_6x_fixed_capital/ r
 #### 2. 代码文件更新（git）
 代码文件通过Git进行版本控制和更新：
 
+**重要规则：服务器上不准修改代码**
+- 所有代码修改必须在本地开发环境进行
+- 提交到Git仓库后，在服务器上通过`git pull`拉取更新
+- 禁止在服务器上直接编辑源代码文件
+- 配置模板文件的更新通过Git模板（config.yaml.template）管理，重要配置变更需更新模板文件
+
 ```bash
 # 登录服务器后，确保在项目目录中（/root/workspace/rich/lightgbm）
 cd /root/workspace/rich/lightgbm
@@ -159,6 +165,34 @@ git stash pop
 docker-compose down
 docker-compose up -d
 ```
+
+#### 3. 配置文件更新（挂载方式）
+**重要：配置文件通过Docker卷挂载方式使用，不能提交到git，也不能打进镜像**
+
+**配置文件挂载特点**：
+- `config.yaml`文件通过Docker卷挂载到容器中
+- 配置文件不进入Git版本控制，也不打包进Docker镜像
+- 本地和服务器分别维护各自的`config.yaml`文件
+- 重要配置变更需要同步更新本地和服务器两端的配置文件
+
+**配置文件同步方法**：
+1. **本地修改**：在本地开发环境的`config.yaml`中进行配置变更
+2. **服务器同步**：使用`scp`命令将配置同步到服务器
+3. **服务重启**：重启Docker服务使新配置生效
+
+**配置文件同步示例**：
+```bash
+# 同步配置文件到服务器
+scp /Users/lemonshwang/project/rich/lightgbm/config.yaml root@47.236.94.252:/root/workspace/rich/lightgbm/config.yaml
+
+# 登录服务器重启服务
+ssh root@47.236.94.252 'cd /root/workspace/rich/lightgbm && docker-compose restart paper_trading'
+```
+
+**配置变更注意事项**：
+- 敏感信息（如API密钥、邮箱密码）存储在配置文件中，确保文件权限安全
+- 配置变更后务必重启相关服务
+- 建议先备份服务器原配置文件：`cp config.yaml config.yaml.backup.$(date +%Y%m%d_%H%M%S)`
 
 ### 服务运行
 模拟盘和实盘交易需要在服务器上运行：

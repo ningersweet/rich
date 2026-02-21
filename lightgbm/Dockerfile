@@ -13,9 +13,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 复制核心模块
 COPY btc_quant/ ./btc_quant/
 
-# 复制配置文件
-COPY config.yaml .
-
 # 复制运行脚本
 COPY run_live_dynamic_exposure.py .
 
