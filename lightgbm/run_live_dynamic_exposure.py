@@ -162,7 +162,7 @@ def main():
     max_daily_loss_pct = -0.20  # 每日最大亏损-20%
     max_drawdown_pause = 0.10  # 回撤>10%暂停交易至明日
     rr_threshold = 2.5  # RR阈值（最佳参数，2026-02-17回测验证）
-    prob_threshold = 0.30  # 置信度阈值（进一步降低用于功能测试）
+    prob_threshold = 0.75  # 置信度阈值（最佳参数，2026-02-17回测验证）
     
     # 金字塔加仓参数（从配置文件读取）
     enhanced_cfg = cfg.raw.get('enhanced', {})
