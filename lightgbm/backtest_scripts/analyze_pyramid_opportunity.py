@@ -23,10 +23,10 @@ klines_bt = klines_bt.iloc[:min_len].reset_index(drop=True)
 
 # 加载模型和Top30特征
 strategy = TwoStageRiskRewardStrategy()
-strategy.load(Path('models/final_2024_dynamic'))
+strategy.load(Path('models/final_2025_dynamic'))
 
 # 读取Top30特征列表
-with open('models/final_2024_dynamic/top30_features.txt', 'r') as f:
+with open('models/final_2025_dynamic/top30_features.txt', 'r') as f:
     top30 = [line.strip() for line in f if line.strip()]
 
 # 预测

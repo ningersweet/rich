@@ -42,9 +42,9 @@ logger=logging.getLogger(__name__)
 logger.info(f"日志文件: {log_file.absolute()}")
 
 # 配置常量
-BACKTEST_START='2025-01-01T00:00:00Z'
-BACKTEST_END='2026-02-20T23:59:59Z'
-MODEL_DIR=Path('models/final_2024_dynamic')
+BACKTEST_START='2026-01-01T00:00:00Z'
+BACKTEST_END='2026-02-07T23:59:59Z'
+MODEL_DIR=Path('models/final_2025_dynamic')
 INITIAL_BALANCE=1000.0
 MAX_EXPOSURE=10.0
 STOP_LOSS_PCT=-0.03
@@ -341,7 +341,7 @@ def run_backtest() -> None:
     if result['trades'] is not None:
         OUTPUT_DIR.mkdir(exist_ok=True)
         timestamp=datetime.now().strftime('%Y%m%d_%H%M%S')
-        output_file=OUTPUT_DIR/f'final_2024_dynamic_{timestamp}.csv'
+        output_file=OUTPUT_DIR/f'final_2025_dynamic_{timestamp}.csv'
         result['trades'].to_csv(output_file,index=False)
         logger.info(f"\n交易记录已保存:{output_file}")
     logger.info("\n"+"="*80)

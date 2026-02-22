@@ -343,9 +343,9 @@ def run_backtest() -> None:
         from btc_quant.risk_reward_model import TwoStageRiskRewardStrategy
         
         # 回测配置（与backtest_engine.py保持一致）
-        BACKTEST_START = '2025-01-01T00:00:00Z'
-        BACKTEST_END = '2026-02-20T23:59:59Z'
-        MODEL_DIR = Path('models/final_2024_dynamic')
+        BACKTEST_START = '2026-01-01T00:00:00Z'
+        BACKTEST_END = '2026-02-07T23:59:59Z'
+        MODEL_DIR = Path('models/final_2025_dynamic')
         INITIAL_BALANCE = 1000.0
         MAX_EXPOSURE = 10.0
         STOP_LOSS_PCT = -0.03

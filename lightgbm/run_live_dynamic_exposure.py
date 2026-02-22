@@ -137,7 +137,7 @@ def main():
     base_url = client.base_url
     
     # 加载盈亏比两阶段模型
-    model_dir = Path('models/final_2024_dynamic')
+    model_dir = Path('models/final_2025_dynamic')
     if not model_dir.exists():
         logger.error("模型目录不存在: %s", model_dir)
         return
